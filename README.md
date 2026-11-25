@@ -4,7 +4,7 @@ This project investigates high-performance batch image processing using Python.
 It applies grayscale conversion, Gaussian blur, and Sobel edge detection to multiple images sequentially and in parallel using Python multiprocessing.
 The project evaluates computational performance metrics including execution time, speedup, and parallel efficiency across varying numbers of CPU cores.
 
-Status: Module 1 of 7 (project setup only)
+Status: Module 2 of 7 (sequential processing)
 
 ## Setup Guide (macOS / Apple Silicon)
 
