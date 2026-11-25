@@ -2,9 +2,9 @@
 
 A High Performance Computing (HPC) mini project evaluating sequential versus data-parallel image processing across multi-core CPUs.
 The application performs grayscale conversion, Gaussian blur filtering, and Sobel edge detection across batches of images using pure NumPy and Python's standard `multiprocessing` library.
-It systematically evaluates execution times, speedup factors, and parallel efficiency across varying worker core allocations through an interactive Streamlit web dashboard and command-line interfaces.
+It systematically evaluates execution times, speedup factors, and parallel efficiency across varying worker core allocations through an interactive Streamlit web dashboard, command-line interfaces, and automated publication-quality PDF report generation.
 
-Status: All 7 modules complete
+Status: All 8 modules complete
 
 ---
 
@@ -16,7 +16,8 @@ Status: All 7 modules complete
 - **HPC Metric Evaluation**: Automated measurement of execution time, parallel speedup ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$).
 - **Visual Analytics**: Publication-ready Matplotlib performance charts comparing execution times (with standard deviation error bars), speedup scaling against ideal linear speedup, and efficiency curves against the 100% baseline.
 - **Interactive Web Interface**: Streamlit dashboard supporting multi-file image uploads, filter parameter controls, live progress tracking, summary metric cards, 4-stage visual preview gallery, and in-memory export (PNGs, CSV, and ZIP archives).
-- **Comprehensive Unit Testing**: Robust Pytest test suite validating filter mathematics, multiprocessing consistency, input validation, and in-memory export pipelines.
+- **Automated PDF Benchmark Report (Module 8)**: Single-click generation of a comprehensive, publication-quality A4 PDF report in memory using ReportLab. The report embeds executive summaries, machine hardware details, experiment settings, tabular metrics, Matplotlib scaling charts, automated performance analysis/conclusions, and a full 4-stage image gallery for all uploaded images with preserved aspect ratios.
+- **Comprehensive Unit Testing**: Robust Pytest test suite validating filter mathematics, multiprocessing consistency, input validation, in-memory export pipelines, and automated PDF generation.
 
 ---
 
@@ -27,6 +28,7 @@ Status: All 7 modules complete
 - **Image Handling & I/O**: Pillow (PIL)
 - **Data Structures & Metrics**: Pandas
 - **Visualization**: Matplotlib (headless `Agg` backend)
+- **Document & PDF Generation**: ReportLab
 - **Web User Interface**: Streamlit
 - **Testing Framework**: Pytest
 - **Parallel Computing**: Standard Library `multiprocessing` (Process Pool, `spawn` context)
@@ -37,10 +39,10 @@ Status: All 7 modules complete
 
 ```
 HPC-Parallel-Image-Processing/
-├── .gitignore                      # Git exclusion rules for caches, venvs, and generated outputs
+├── .gitignore                      # Git exclusion rules for caches, venvs, PDFs, and generated outputs
 ├── AI_USAGE.md                     # Disclosure of AI assistance and student verification log
 ├── README.md                       # Comprehensive project documentation
-├── app.py                          # Streamlit web dashboard
+├── app.py                          # Streamlit web dashboard with PDF report download
 ├── pytest.ini                      # Pytest test discovery and path configuration
 ├── requirements.txt                # Package dependencies with lower bounds
 ├── docs/
@@ -65,6 +67,7 @@ HPC-Parallel-Image-Processing/
 │   ├── image_io.py                 # Image loading, folder discovery, and saving helpers
 │   ├── metrics.py                  # Speedup and efficiency calculation functions
 │   ├── parallel.py                 # Data-parallel batch processor using worker pools
+│   ├── pdf_report.py               # Automated A4 PDF benchmark report generator (Module 8)
 │   ├── pipeline.py                 # Picklable single-image transformation pipeline
 │   ├── plots.py                    # Matplotlib chart generators and export CLI
 │   └── sequential.py               # Single-core baseline batch processor and CLI
@@ -75,6 +78,7 @@ HPC-Parallel-Image-Processing/
     ├── test_export_and_plots.py    # In-memory export serialization and plot creation tests
     ├── test_filters.py             # Filter mathematical correctness and boundary tests
     ├── test_metrics.py             # Speedup and efficiency formula unit tests
+    ├── test_pdf_report.py          # PDF generation, layout, and analysis tests (Module 8)
     ├── test_pipeline.py            # Single-image pipeline and parallel consistency tests
     └── test_smoke.py               # Initial setup and configuration smoke test
 ```
@@ -119,6 +123,7 @@ Launch the web interface in your browser:
 ```bash
 streamlit run app.py
 ```
+*After running a benchmark, click **📥 Download Complete Benchmark Report (PDF)** to download the generated PDF report.*
 
 ### 2. Sequential Processing CLI
 Run the single-core baseline pipeline on a folder of images:
@@ -163,6 +168,12 @@ Every image undergoes three sequential filtering operations:
 ### Data Parallelism
 - **Domain Decomposition**: Each image in the batch represents an independent, embarrassingly parallel task.
 - **Process Pool**: Tasks are distributed across worker processes using `multiprocessing.Pool.map`.
+
+### Automated PDF Report Generation (Module 8)
+- Built with ReportLab using Platypus flowable elements (`Paragraph`, `Table`, `Image`, `KeepTogether`) and a dynamic two-pass canvas (`NumberedCanvas`) that computes exact total page numbers ("Page X of Y").
+- Generates all sections in memory into an efficient `io.BytesIO` binary stream.
+- Includes automatic performance analysis interpreting speedup, core efficiency, Amdahl's Law, and architectural trade-offs based entirely on real measurements.
+- Embeds all uploaded images with thumbnail downsampling that maintains original aspect ratios while preventing file size bloat.
 
 ### Why `spawn` on macOS Apple Silicon
 macOS prohibits multi-threaded applications from using `fork()` without `exec()`, as inherited locks and CoreFoundation state lead to deadlocks and crashes.

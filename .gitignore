@@ -18,6 +18,9 @@ venv/
 # Streamlit secrets
 .streamlit/secrets.toml
 
+# PDF generated reports
+*.pdf
+
 # Project generated folders (keep directories via .gitkeep, ignore generated content)
 sample_images/*
 !sample_images/.gitkeep

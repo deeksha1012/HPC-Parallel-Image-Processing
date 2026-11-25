@@ -4,7 +4,8 @@ Streamlit Web Dashboard for High Performance Image Processing.
 Provides an interactive user interface to upload images, configure Gaussian blur
 and core allocation parameters, run sequential and parallel benchmarks, inspect
 execution times and efficiency metrics, visualize image processing stages,
-display performance charts, and export results in various formats.
+display performance charts, and export results in various formats including
+an automated, comprehensive publication-quality PDF report.
 """
 
 import os
@@ -30,6 +31,7 @@ from src.export import (
     image_to_png_bytes,
 )
 from src.image_io import load_image
+from src.pdf_report import generate_benchmark_pdf
 from src.plots import plot_efficiency, plot_execution_time, plot_speedup
 
 
@@ -197,12 +199,40 @@ def render_performance_graphs(df: pd.DataFrame) -> None:
 def render_downloads(
     df: pd.DataFrame,
     last_results: list[dict[str, Any]],
+    original_images: list[tuple[str, np.ndarray]],
+    params: dict[str, Any],
+    system_info: dict[str, Any],
     selected_image_name: str,
 ) -> None:
-    """Render export and download options for images, archives, tables, and graphs."""
+    """Render export and download options for reports, images, archives, tables, and graphs."""
     st.subheader("Downloads")
 
-    # 1. Download outputs for currently selected image
+    # 1. Complete Benchmark Report (PDF)
+    st.markdown("#### 📄 Complete Benchmark Report (PDF)")
+    st.write(
+        "Generate and download a comprehensive, publication-ready A4 PDF report containing "
+        "hardware specifications, experiment configuration, benchmark metrics table, "
+        "scaling curves, automated performance analysis, and the full 4-stage processed image gallery."
+    )
+    pdf_bytes = generate_benchmark_pdf(
+        df=df,
+        last_results=last_results,
+        original_images=original_images,
+        params=params,
+        system_info=system_info,
+    )
+    st.download_button(
+        "📥 Download Complete Benchmark Report (PDF)",
+        data=pdf_bytes,
+        file_name="hpc_benchmark_report.pdf",
+        mime="application/pdf",
+        key="dl_complete_benchmark_pdf",
+        type="primary",
+    )
+
+    st.divider()
+
+    # 2. Download outputs for currently selected image
     if selected_image_name:
         res_dict = {res["name"]: res for res in last_results}
         if selected_image_name in res_dict:
@@ -235,7 +265,7 @@ def render_downloads(
 
     st.divider()
 
-    # 2. Batch ZIP download with stage selection
+    # 3. Batch ZIP download with stage selection
     st.markdown("**Download all processed images (ZIP Archive)**")
     zip_stages = st.multiselect(
         "Select output types to include in ZIP archive:",
@@ -255,7 +285,7 @@ def render_downloads(
 
     st.divider()
 
-    # 3. Download results table as CSV
+    # 4. Download results table as CSV
     st.markdown("**Download benchmark data**")
     csv_bytes = dataframe_to_csv_bytes(df)
     st.download_button(
@@ -268,7 +298,7 @@ def render_downloads(
 
     st.divider()
 
-    # 4. Download high-resolution graph PNGs
+    # 5. Download high-resolution graph PNGs
     st.markdown("**Download performance graphs (PNG)**")
     c_g1, c_g2, c_g3 = st.columns(3)
 
@@ -404,6 +434,7 @@ def main() -> None:
                     st.session_state["benchmark_df"] = df
                     st.session_state["last_results"] = last_results
                     st.session_state["original_images"] = loaded_images
+                    st.session_state["params"] = params
                     st.session_state["system_info"] = get_system_info()
                     st.success("Benchmark completed successfully!")
                 except Exception as exc:
@@ -415,13 +446,25 @@ def main() -> None:
         df = st.session_state["benchmark_df"]
         last_results = st.session_state["last_results"]
         orig_images = st.session_state["original_images"]
+        params = st.session_state.get(
+            "params",
+            {"kernel_size": DEFAULT_KERNEL_SIZE, "sigma": DEFAULT_SIGMA},
+        )
+        sys_info = st.session_state.get("system_info", {})
 
         render_summary_metrics(df)
         render_results_table(df)
         selected_img = render_processed_images(last_results, orig_images)
         render_performance_graphs(df)
-        render_downloads(df, last_results, selected_img)
-        render_system_info(st.session_state["system_info"])
+        render_downloads(
+            df=df,
+            last_results=last_results,
+            original_images=orig_images,
+            params=params,
+            system_info=sys_info,
+            selected_image_name=selected_img,
+        )
+        render_system_info(sys_info)
     else:
         st.info(
             "Upload one or more images in the sidebar, configure settings, "
