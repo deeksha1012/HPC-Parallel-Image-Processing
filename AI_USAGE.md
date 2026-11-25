@@ -6,7 +6,7 @@ This project was developed with the assistance of an AI coding agent (**Google A
 
 ## 1. Scope of AI Assistance
 
-- **Code Generation**: Scaffolding modules, pure-NumPy filter algorithms, multiprocessing execution wrappers, Streamlit user interface widgets, and ReportLab PDF report generation based on student specifications.
+- **Code Generation**: Scaffolding modules, pure-NumPy filter algorithms, multiprocessing execution wrappers, Streamlit UI/UX redesign, and ReportLab PDF report generation based on student specifications.
 - **Test Suite Drafting**: Developing automated Pytest test fixtures, unit tests, and validation test cases.
 - **Technical Documentation**: Formatting markdown guides, structuring theoretical viva explanations, and organizing project documentation.
 
@@ -43,6 +43,7 @@ To guarantee academic integrity and software reliability:
 | Module 6: Performance Visualizations and Downloads | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 | Module 7: Documentation, Verification and Viva Preparation | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 | Module 8: Automated PDF Benchmark Report Generation | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
+| Module 9: Advanced Interactive Frontend & Navigation | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 
 ---
 

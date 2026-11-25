@@ -1,17 +1,19 @@
 """
-Streamlit Web Dashboard for High Performance Image Processing.
+HPC Image Processing Lab — Parallel Computing and Performance Analysis Platform.
 
-Provides an interactive user interface to upload images, configure Gaussian blur
-and core allocation parameters, run sequential and parallel benchmarks, inspect
-execution times and efficiency metrics, visualize image processing stages,
-display performance charts, and export results in various formats including
-an automated, comprehensive publication-quality PDF report.
+Main Streamlit application implementing Module 9: Advanced Interactive Frontend.
+Provides a modern laboratory interface organized into 6 functional tabs:
+1. Overview: Executive summary cards, workload metrics, and workflow guide.
+2. Image Processing: 4-stage gallery, interactive before/after comparison slider, and full-resolution inspection.
+3. Performance Analytics: Scaling charts, speedup curves, and complete metrics tables.
+4. System Monitor: Hardware profiling and Module 10 feature preview.
+5. Benchmark History: Current session archives and Module 10 feature preview.
+6. Reports: PDF benchmark report, CSV table, ZIP archives, and graph exports.
 """
 
 import os
 from pathlib import Path
-from typing import Any
-import matplotlib.pyplot as plt
+from typing import Any, List, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -24,18 +26,23 @@ from src.config import (
     MAX_UPLOAD_IMAGES,
     SUPPORTED_EXTENSIONS,
 )
-from src.export import (
-    create_results_zip,
-    dataframe_to_csv_bytes,
-    figure_to_png_bytes,
-    image_to_png_bytes,
-)
 from src.image_io import load_image
-from src.pdf_report import generate_benchmark_pdf
-from src.plots import plot_efficiency, plot_execution_time, plot_speedup
+from src.sample_generator import (
+    RESOLUTION_PRESETS,
+    generate_sample_images_in_memory,
+)
+from src.ui.components import inject_custom_css
+from src.ui.tabs import (
+    render_analytics_tab,
+    render_history_tab,
+    render_image_processing_tab,
+    render_overview_tab,
+    render_reports_tab,
+    render_system_monitor_tab,
+)
 
 
-def load_uploaded_files(uploaded_files: list) -> list[tuple[str, np.ndarray]]:
+def load_uploaded_files(uploaded_files: list) -> List[Tuple[str, np.ndarray]]:
     """
     Load uploaded files with Pillow into RGB uint8 NumPy arrays.
 
@@ -49,11 +56,10 @@ def load_uploaded_files(uploaded_files: list) -> list[tuple[str, np.ndarray]]:
         )
 
     seen_names: dict[str, int] = {}
-    loaded: list[tuple[str, np.ndarray]] = []
+    loaded: List[Tuple[str, np.ndarray]] = []
 
     for file in uploaded_files[:MAX_UPLOAD_IMAGES]:
         name = file.name
-        # Make duplicate filenames unique so result lookups stay consistent
         if name in seen_names:
             seen_names[name] += 1
             stem = Path(name).stem
@@ -71,357 +77,188 @@ def load_uploaded_files(uploaded_files: list) -> list[tuple[str, np.ndarray]]:
     return loaded
 
 
-def render_summary_metrics(df: pd.DataFrame) -> None:
-    """Display top-level performance cards for sequential time, parallel speedup, and efficiency."""
-    seq_row = df[df["mode"] == "Sequential"].iloc[0]
-    par_df = df[df["mode"] == "Parallel"]
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sequential Time", f"{seq_row['mean_time_s']:.3f} s")
-
-    if not par_df.empty:
-        fastest_idx = par_df["mean_time_s"].idxmin()
-        fastest_row = par_df.loc[fastest_idx]
-        max_sp_row = par_df.loc[par_df["speedup"].idxmax()]
-
-        col2.metric(
-            "Fastest Parallel",
-            f"{fastest_row['mean_time_s']:.3f} s",
-            f"{int(fastest_row['workers'])} workers",
-        )
-        col3.metric("Highest Speedup", f"{max_sp_row['speedup']:.2f}x")
-        col4.metric(
-            "Parallel Efficiency",
-            f"{fastest_row['efficiency'] * 100:.1f}%",
-        )
-
-        if fastest_row["mean_time_s"] >= seq_row["mean_time_s"]:
-            st.info(
-                "Notice: Sequential processing was faster than parallel in this run. "
-                "For small image batches, process spawning and memory transfer overhead "
-                "can outweigh parallel computation gains."
-            )
-
-
-def render_results_table(df: pd.DataFrame) -> None:
-    """Display the benchmark metrics table with clear headers and formatted numbers."""
-    display_df = df.copy()
-    display_df = display_df.rename(
-        columns={
-            "mode": "Mode",
-            "workers": "Workers",
-            "runs": "Runs",
-            "mean_time_s": "Mean Time (s)",
-            "min_time_s": "Min Time (s)",
-            "std_time_s": "Std Dev (s)",
-            "speedup": "Speedup",
-            "efficiency": "Efficiency",
-            "num_images": "Images",
-            "total_megapixels": "Megapixels",
-            "run_times_s": "Individual Runs (s)",
-        }
-    )
-
-    display_df["Mean Time (s)"] = display_df["Mean Time (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Min Time (s)"] = display_df["Min Time (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Std Dev (s)"] = display_df["Std Dev (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Speedup"] = display_df["Speedup"].map(lambda x: f"{x:.2f}x")
-    display_df["Efficiency"] = display_df["Efficiency"].map(lambda x: f"{x * 100:.1f}%")
-
-    st.subheader("Benchmark Metrics Table")
-    st.dataframe(display_df, use_container_width=True)
-
-
-def render_processed_images(
-    last_results: list[dict[str, Any]],
-    original_images: list[tuple[str, np.ndarray]],
-) -> str:
-    """
-    Display a 4-column visual gallery comparing Original, Grayscale, Blur, and Edges.
-
-    Returns:
-        str: Currently selected image name for targeted downloads.
-    """
-    st.subheader("Processed Images Preview")
-    orig_dict = {name: arr for name, arr in original_images}
-    res_dict = {res["name"]: res for res in last_results}
-
-    image_names = list(orig_dict.keys())
-    if not image_names:
-        return ""
-
-    selected = st.selectbox("Select an image to inspect", options=image_names)
-    if selected and selected in res_dict:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.image(orig_dict[selected], caption="1. Original RGB", use_container_width=True)
-        c2.image(res_dict[selected]["gray"], caption="2. Grayscale", use_container_width=True)
-        c3.image(res_dict[selected]["blur"], caption="3. Gaussian Blur", use_container_width=True)
-        c4.image(res_dict[selected]["edges"], caption="4. Sobel Edges", use_container_width=True)
-
-    return selected or ""
-
-
-def render_performance_graphs(df: pd.DataFrame) -> None:
-    """Render performance graphs in tabs with captions and close figures cleanly."""
-    st.subheader("Performance Graphs")
-    tab_time, tab_speedup, tab_eff = st.tabs(["Execution time", "Speedup", "Efficiency"])
-
-    with tab_time:
-        fig_time = plot_execution_time(df)
-        st.pyplot(fig_time)
-        plt.close(fig_time)
-        st.caption(
-            "How to read: Lower bars represent faster total execution time. Error bars show "
-            "the standard deviation across runs, illustrating execution stability."
-        )
-
-    with tab_speedup:
-        fig_speedup = plot_speedup(df)
-        st.pyplot(fig_speedup)
-        plt.close(fig_speedup)
-        st.caption(
-            "How to read: Values above 1.0 indicate acceleration over sequential execution. "
-            "The dashed line represents theoretical ideal linear speedup where performance "
-            "scales proportionally with worker core count."
-        )
-
-    with tab_eff:
-        fig_eff = plot_efficiency(df)
-        st.pyplot(fig_eff)
-        plt.close(fig_eff)
-        st.caption(
-            "How to read: Measures how effectively additional worker cores contribute to speedup. "
-            "The dashed line at 100% shows ideal linear scaling; real efficiency decreases with "
-            "more cores due to inter-process communication and synchronization overhead."
-        )
-
-
-def render_downloads(
-    df: pd.DataFrame,
-    last_results: list[dict[str, Any]],
-    original_images: list[tuple[str, np.ndarray]],
-    params: dict[str, Any],
-    system_info: dict[str, Any],
-    selected_image_name: str,
-) -> None:
-    """Render export and download options for reports, images, archives, tables, and graphs."""
-    st.subheader("Downloads")
-
-    # 1. Complete Benchmark Report (PDF)
-    st.markdown("#### 📄 Complete Benchmark Report (PDF)")
-    st.write(
-        "Generate and download a comprehensive, publication-ready A4 PDF report containing "
-        "hardware specifications, experiment configuration, benchmark metrics table, "
-        "scaling curves, automated performance analysis, and the full 4-stage processed image gallery."
-    )
-    pdf_bytes = generate_benchmark_pdf(
-        df=df,
-        last_results=last_results,
-        original_images=original_images,
-        params=params,
-        system_info=system_info,
-    )
-    st.download_button(
-        "📥 Download Complete Benchmark Report (PDF)",
-        data=pdf_bytes,
-        file_name="hpc_benchmark_report.pdf",
-        mime="application/pdf",
-        key="dl_complete_benchmark_pdf",
-        type="primary",
-    )
-
-    st.divider()
-
-    # 2. Download outputs for currently selected image
-    if selected_image_name:
-        res_dict = {res["name"]: res for res in last_results}
-        if selected_image_name in res_dict:
-            res = res_dict[selected_image_name]
-            stem = Path(selected_image_name).stem
-            st.markdown(f"**Download individual outputs for:** `{selected_image_name}`")
-            col_g, col_b, col_e = st.columns(3)
-
-            col_g.download_button(
-                "Download Grayscale (PNG)",
-                data=image_to_png_bytes(res["gray"]),
-                file_name=f"{stem}_gray.png",
-                mime="image/png",
-                key="dl_single_gray",
-            )
-            col_b.download_button(
-                "Download Gaussian Blur (PNG)",
-                data=image_to_png_bytes(res["blur"]),
-                file_name=f"{stem}_blur.png",
-                mime="image/png",
-                key="dl_single_blur",
-            )
-            col_e.download_button(
-                "Download Sobel Edges (PNG)",
-                data=image_to_png_bytes(res["edges"]),
-                file_name=f"{stem}_edges.png",
-                mime="image/png",
-                key="dl_single_edges",
-            )
-
-    st.divider()
-
-    # 3. Batch ZIP download with stage selection
-    st.markdown("**Download all processed images (ZIP Archive)**")
-    zip_stages = st.multiselect(
-        "Select output types to include in ZIP archive:",
-        options=["gray", "blur", "edges"],
-        default=["gray", "blur", "edges"],
-        key="zip_stages_multiselect",
-    )
-    if zip_stages:
-        zip_bytes = create_results_zip(last_results, which=zip_stages)
-        st.download_button(
-            "Download all processed images (ZIP)",
-            data=zip_bytes,
-            file_name="processed_images.zip",
-            mime="application/zip",
-            key="dl_all_images_zip",
-        )
-
-    st.divider()
-
-    # 4. Download results table as CSV
-    st.markdown("**Download benchmark data**")
-    csv_bytes = dataframe_to_csv_bytes(df)
-    st.download_button(
-        "Download results table (CSV)",
-        data=csv_bytes,
-        file_name="benchmark_results.csv",
-        mime="text/csv",
-        key="dl_benchmark_csv",
-    )
-
-    st.divider()
-
-    # 5. Download high-resolution graph PNGs
-    st.markdown("**Download performance graphs (PNG)**")
-    c_g1, c_g2, c_g3 = st.columns(3)
-
-    f_time = plot_execution_time(df)
-    b_time = figure_to_png_bytes(f_time)
-    plt.close(f_time)
-    c_g1.download_button(
-        "Download Execution Time Graph",
-        data=b_time,
-        file_name="execution_time.png",
-        mime="image/png",
-        key="dl_fig_time",
-    )
-
-    f_sp = plot_speedup(df)
-    b_sp = figure_to_png_bytes(f_sp)
-    plt.close(f_sp)
-    c_g2.download_button(
-        "Download Speedup Graph",
-        data=b_sp,
-        file_name="speedup.png",
-        mime="image/png",
-        key="dl_fig_speedup",
-    )
-
-    f_eff = plot_efficiency(df)
-    b_eff = figure_to_png_bytes(f_eff)
-    plt.close(f_eff)
-    c_g3.download_button(
-        "Download Efficiency Graph",
-        data=b_eff,
-        file_name="efficiency.png",
-        mime="image/png",
-        key="dl_fig_efficiency",
-    )
-
-
-def render_system_info(info: dict[str, Any]) -> None:
-    """Display hardware and software specifications in an expandable section."""
-    with st.expander("Test machine details"):
-        st.write(f"- **Timestamp:** {info.get('timestamp')}")
-        st.write(f"- **Platform:** {info.get('platform')}")
-        st.write(f"- **Machine Architecture:** {info.get('machine')}")
-        st.write(f"- **Python Version:** {info.get('python_version')}")
-        st.write(f"- **Total CPU Cores:** {info.get('cpu_count')}")
-        st.write(f"- **Start Method:** {info.get('start_method')}")
-
-
 def main() -> None:
-    """Main application routine building the Streamlit dashboard."""
-    st.set_page_config(page_title="HPC Image Processing", layout="wide")
-
-    st.title("High Performance Image Processing Using Parallel Computing")
-    st.write(
-        "This project applies grayscale conversion, Gaussian blur, and Sobel edge detection "
-        "to batches of images sequentially and in parallel using Python multiprocessing. "
-        "It benchmarks execution times, speedup factors, and parallel efficiency across core allocations."
-    )
-    st.caption(
-        "Note: Parallel is not always faster: with few or small images, process start-up "
-        "and data copying can outweigh the gain."
+    """Main application routine building the HPC Image Processing Lab."""
+    # 1. Page Configuration
+    st.set_page_config(
+        page_title="HPC Image Processing Lab",
+        page_icon="🔬",
+        layout="wide",
+        initial_sidebar_state="expanded",
     )
 
-    # Sidebar: Parameter controls and file uploader
-    st.sidebar.header("Configuration")
-    ext_list = [ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS]
-    uploaded_files = st.sidebar.file_uploader(
-        "Upload images",
-        type=ext_list,
-        accept_multiple_files=True,
+    # 2. Inject modern laboratory CSS styling
+    inject_custom_css()
+
+    # Initialize session state stores if absent
+    if "loaded_images" not in st.session_state:
+        st.session_state["loaded_images"] = []
+    if "system_info" not in st.session_state:
+        st.session_state["system_info"] = get_system_info()
+
+    # 3. Sidebar: Application Controls and Configuration
+    st.sidebar.markdown("## 🔬 HPC Image Processing Lab")
+    st.sidebar.markdown(
+        '<span class="hpc-badge">Module 9: Advanced Frontend</span>',
+        unsafe_allow_html=True,
     )
+
+    # Reset Experiment Action
+    if st.sidebar.button("🔄 Reset Experiment", use_container_width=True, help="Clear all uploaded images, generated samples, and benchmark data"):
+        for key in ["loaded_images", "benchmark_df", "last_results", "original_images", "params"]:
+            st.session_state.pop(key, None)
+        st.session_state["loaded_images"] = []
+        st.rerun()
+
+    st.sidebar.markdown("---")
+
+    # Image Input Modes (Sample Generator vs. Custom Upload)
+    st.sidebar.markdown("### 📂 Image Dataset")
+    input_mode = st.sidebar.radio(
+        "Choose image source:",
+        options=["🎨 Generate Sample Images", "📁 Upload Custom Images"],
+        index=0 if not st.session_state.get("uploaded_files_present", False) else 1,
+        help="Use synthetic reproducible test patterns or upload your own PNG/JPG images.",
+    )
+
+    if input_mode == "🎨 Generate Sample Images":
+        st.sidebar.caption("Generate synthetic images with gradients, shapes, and noise:")
+        preset_choice = st.sidebar.selectbox(
+            "Resolution preset:",
+            options=list(RESOLUTION_PRESETS.keys()),
+            index=1,
+            help="Select resolution preset balancing processing speed and workload size.",
+        )
+        sample_count = st.sidebar.slider(
+            "Image count:",
+            min_value=1,
+            max_value=16,
+            value=4,
+            help="Number of synthetic sample images to generate.",
+        )
+        sample_seed = st.sidebar.number_input(
+            "Random seed (reproducibility):",
+            min_value=0,
+            max_value=9999,
+            value=42,
+            step=1,
+            help="Base seed for deterministic gradient and shape generation.",
+        )
+
+        if st.sidebar.button("✨ Generate Synthetic Images", use_container_width=True):
+            width, height = RESOLUTION_PRESETS[preset_choice]
+            with st.spinner("Generating synthetic test images in memory..."):
+                gen_images = generate_sample_images_in_memory(
+                    count=sample_count,
+                    width=width,
+                    height=height,
+                    seed=int(sample_seed),
+                )
+                st.session_state["loaded_images"] = gen_images
+                st.session_state.pop("benchmark_df", None)
+                st.session_state.pop("last_results", None)
+                st.sidebar.success(f"Generated {len(gen_images)} images ({width}×{height})!")
+                st.rerun()
+
+    else:
+        ext_list = [ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS]
+        uploaded = st.sidebar.file_uploader(
+            "Upload image files:",
+            type=ext_list,
+            accept_multiple_files=True,
+            help="Supported file formats: PNG, JPG, JPEG (converted to RGB uint8).",
+        )
+        if uploaded:
+            st.session_state["uploaded_files_present"] = True
+            st.session_state["loaded_images"] = load_uploaded_files(uploaded)
+
+    # Dataset Summary Indicator
+    loaded_images = st.session_state.get("loaded_images", [])
+    if loaded_images:
+        total_mp = sum(a.shape[0] * a.shape[1] for _, a in loaded_images) / 1_000_000.0
+        st.sidebar.info(f"Active dataset: **{len(loaded_images)} image(s)** ({total_mp:.2f} Megapixels)")
+
+    st.sidebar.markdown("---")
+
+    # Filter & Multiprocessing Parameters with Tooltips
+    st.sidebar.markdown("### ⚙️ Pipeline Parameters")
 
     kernel_size = st.sidebar.select_slider(
-        "Gaussian Kernel Size",
+        "Gaussian Kernel Size:",
         options=[i for i in range(3, 33, 2)],
         value=DEFAULT_KERNEL_SIZE,
+        help="Size of the square Gaussian blur filter window in pixels. Must be an odd number (3 to 31) so that the filter has an exact center pixel.",
     )
     sigma = st.sidebar.slider(
-        "Gaussian Sigma",
+        "Gaussian Sigma (σ):",
         min_value=0.5,
         max_value=10.0,
         value=float(DEFAULT_SIGMA),
         step=0.5,
+        help="Standard deviation for the Gaussian distribution. Controls the spatial spread of the blur filter.",
     )
 
     cpu_max = os.cpu_count() or 1
     worker_options = list(range(1, cpu_max + 1))
     default_workers = sorted(list(set([w for w in [2, 4, cpu_max] if w in worker_options])))
     worker_counts = st.sidebar.multiselect(
-        "Worker process counts to benchmark",
+        "Worker process counts to benchmark:",
         options=worker_options,
         default=default_workers,
+        help="List of parallel CPU worker counts to evaluate. Each count tests data-parallel execution using Python multiprocessing (spawn start method).",
     )
 
     repeats = st.sidebar.slider(
-        "Benchmark repeats per test",
+        "Benchmark repeats per test:",
         min_value=1,
         max_value=5,
         value=int(DEFAULT_REPEATS),
         step=1,
+        help="Number of times each configuration is repeated to calculate a stable mean and standard deviation.",
     )
-    run_btn = st.sidebar.button("Run benchmark", type="primary")
 
-    # Load and validate uploaded images
-    loaded_images = load_uploaded_files(uploaded_files) if uploaded_files else []
-    if loaded_images:
-        total_mp = sum(a.shape[0] * a.shape[1] for _, a in loaded_images) / 1_000_000.0
-        st.sidebar.info(f"Loaded {len(loaded_images)} image(s) ({total_mp:.2f} Megapixels).")
+    # Benchmark Execution Trigger
+    st.sidebar.markdown("---")
+    run_btn = st.sidebar.button(
+        "▶️ Run Benchmark",
+        type="primary",
+        use_container_width=True,
+        help="Execute sequential baseline and all selected parallel configurations.",
+    )
 
-    # Handle Run button trigger
+    # 4. Main Area Header & Laboratory Banner
+    st.markdown(
+        """
+        <div class="hpc-main-header">
+            <div class="hpc-title">HPC Image Processing Lab</div>
+            <div class="hpc-subtitle">Parallel Computing and Performance Analysis Platform</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 5. Handle Benchmark Execution
     if run_btn:
         if not loaded_images:
-            st.warning("Please upload at least one supported image in the sidebar before running.")
+            st.warning("⚠️ Please generate sample images or upload image files in the sidebar before running.")
         elif not worker_counts:
-            st.warning("Please select at least one worker process count in the sidebar.")
+            st.warning("⚠️ Please select at least one worker process count in the sidebar.")
         else:
-            params = {"kernel_size": kernel_size, "sigma": sigma}
-            progress_bar = st.progress(0, text="Starting benchmark runs...")
+            params = {
+                "kernel_size": kernel_size,
+                "sigma": sigma,
+                "repeats": repeats,
+            }
+
+            # Interactive live progress bar with configuration & step details
+            progress_bar = st.progress(0, text="Initializing benchmark runs...")
+            status_text = st.empty()
 
             def on_progress(done: int, total: int, msg: str) -> None:
-                progress_bar.progress(done / total, text=msg)
+                progress_bar.progress(done / total)
+                status_text.caption(f"⚡ **Task Progress:** Step {done} of {total} — {msg}")
 
-            with st.spinner("Running benchmarks across sequential and parallel configurations..."):
+            with st.spinner("Running sequential baseline and parallel worker benchmarks..."):
                 try:
                     df, last_results = run_benchmark(
                         images=loaded_images,
@@ -430,45 +267,72 @@ def main() -> None:
                         repeats=repeats,
                         progress_callback=on_progress,
                     )
-                    # Persist benchmark outputs in session state across UI reruns
+                    # Persist benchmark results in session state
                     st.session_state["benchmark_df"] = df
                     st.session_state["last_results"] = last_results
                     st.session_state["original_images"] = loaded_images
                     st.session_state["params"] = params
                     st.session_state["system_info"] = get_system_info()
-                    st.success("Benchmark completed successfully!")
+                    status_text.empty()
+                    st.success("✅ Benchmark execution completed successfully across all configurations!")
                 except Exception as exc:
-                    st.error(f"Benchmark error: {exc}")
+                    st.error(f"❌ Benchmark execution failed: {exc}")
 
-    # Display results from session state if available
-    if "benchmark_df" in st.session_state:
-        st.divider()
-        df = st.session_state["benchmark_df"]
-        last_results = st.session_state["last_results"]
-        orig_images = st.session_state["original_images"]
-        params = st.session_state.get(
-            "params",
-            {"kernel_size": DEFAULT_KERNEL_SIZE, "sigma": DEFAULT_SIGMA},
-        )
-        sys_info = st.session_state.get("system_info", {})
+    # 6. Retrieve active session state data
+    df = st.session_state.get("benchmark_df", None)
+    last_results = st.session_state.get("last_results", None)
+    current_images = st.session_state.get("original_images", loaded_images)
+    params = st.session_state.get(
+        "params",
+        {"kernel_size": kernel_size, "sigma": sigma, "repeats": repeats},
+    )
+    system_info = st.session_state.get("system_info", get_system_info())
 
-        render_summary_metrics(df)
-        render_results_table(df)
-        selected_img = render_processed_images(last_results, orig_images)
-        render_performance_graphs(df)
-        render_downloads(
+    # 7. Navigation Tabs
+    tab_overview, tab_processing, tab_analytics, tab_monitor, tab_history, tab_reports = st.tabs(
+        [
+            "📊 Overview",
+            "🖼️ Image Processing",
+            "⚡ Performance Analytics",
+            "🖥️ System Monitor",
+            "📜 Benchmark History",
+            "📑 Reports",
+        ]
+    )
+
+    with tab_overview:
+        render_overview_tab(
             df=df,
             last_results=last_results,
-            original_images=orig_images,
+            loaded_images=current_images,
+            system_info=system_info,
             params=params,
-            system_info=sys_info,
-            selected_image_name=selected_img,
+            selected_workers=worker_counts,
         )
-        render_system_info(sys_info)
-    else:
-        st.info(
-            "Upload one or more images in the sidebar, configure settings, "
-            "and click **Run benchmark** to view real performance metrics."
+
+    with tab_processing:
+        render_image_processing_tab(
+            loaded_images=current_images,
+            last_results=last_results,
+            params=params,
+        )
+
+    with tab_analytics:
+        render_analytics_tab(df=df)
+
+    with tab_monitor:
+        render_system_monitor_tab(system_info=system_info)
+
+    with tab_history:
+        render_history_tab(df=df)
+
+    with tab_reports:
+        render_reports_tab(
+            df=df,
+            last_results=last_results,
+            loaded_images=current_images,
+            params=params,
+            system_info=system_info,
         )
 
 

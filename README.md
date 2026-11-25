@@ -1,23 +1,30 @@
-# High Performance Image Processing Using Parallel Computing
+# HPC Image Processing Lab
 
-A High Performance Computing (HPC) mini project evaluating sequential versus data-parallel image processing across multi-core CPUs.
-The application performs grayscale conversion, Gaussian blur filtering, and Sobel edge detection across batches of images using pure NumPy and Python's standard `multiprocessing` library.
-It systematically evaluates execution times, speedup factors, and parallel efficiency across varying worker core allocations through an interactive Streamlit web dashboard, command-line interfaces, and automated publication-quality PDF report generation.
+### Parallel Computing and Performance Analysis Platform
 
-Status: All 8 modules complete
+A High Performance Computing (HPC) research and laboratory platform evaluating sequential baseline versus data-parallel image processing across multi-core CPUs.
+The application applies pure-NumPy grayscale conversion, 2-pass separable Gaussian blur filtering, and 3x3 Sobel gradient edge detection across image collections.
+It systematically evaluates wall-clock execution times, speedup factors ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$) through a modern Streamlit laboratory dashboard, command-line interfaces, and automated publication-quality PDF report generation.
+
+Status: All 9 modules complete
 
 ---
 
-## Features
+## Key Features
 
-- **Pure NumPy Filter Pipeline**: Self-contained implementations of ITU-R BT.601 grayscale conversion, 2-pass separable 1D Gaussian blur convolution, and 3x3 Sobel gradient edge detection without external image processing libraries (OpenCV/SciPy).
+- **Pure NumPy Filter Pipeline**: Self-contained implementations of ITU-R BT.601 grayscale conversion, 2-pass separable 1D Gaussian blur convolution ($O(2K)$ complexity), and 3x3 Sobel gradient edge detection without external image processing libraries (OpenCV/SciPy).
 - **Data-Parallel Multiprocessing**: Scalable batch execution leveraging Python's standard `multiprocessing` library using the macOS-safe `spawn` process start method.
-- **Fair Benchmarking**: Controlled benchmarking protocol featuring an untimed sequential warm-up pass, multi-trial repetition, and end-to-end wall-clock timing that accounts for process creation and inter-process communication (IPC) overhead.
+- **Fair Benchmarking Protocol**: Features an untimed sequential warm-up pass, multi-trial repetition, and end-to-end wall-clock timing that accounts for process creation latency and inter-process communication (IPC) serialization overhead.
 - **HPC Metric Evaluation**: Automated measurement of execution time, parallel speedup ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$).
-- **Visual Analytics**: Publication-ready Matplotlib performance charts comparing execution times (with standard deviation error bars), speedup scaling against ideal linear speedup, and efficiency curves against the 100% baseline.
-- **Interactive Web Interface**: Streamlit dashboard supporting multi-file image uploads, filter parameter controls, live progress tracking, summary metric cards, 4-stage visual preview gallery, and in-memory export (PNGs, CSV, and ZIP archives).
-- **Automated PDF Benchmark Report (Module 8)**: Single-click generation of a comprehensive, publication-quality A4 PDF report in memory using ReportLab. The report embeds executive summaries, machine hardware details, experiment settings, tabular metrics, Matplotlib scaling charts, automated performance analysis/conclusions, and a full 4-stage image gallery for all uploaded images with preserved aspect ratios.
-- **Comprehensive Unit Testing**: Robust Pytest test suite validating filter mathematics, multiprocessing consistency, input validation, in-memory export pipelines, and automated PDF generation.
+- **Advanced Interactive Frontend (Module 9)**:
+  - **Laboratory Redesign**: Modern card layout, accent badges, responsive typography, and full compatibility with light and dark themes.
+  - **6 Dedicated Navigation Tabs**: Overview, Image Processing, Performance Analytics, System Monitor (Module 10 preview), Benchmark History (Module 10 preview), and Reports.
+  - **Interactive Before & After Comparison**: Drag-slider and side-by-side split modes comparing Original RGB against Grayscale, Gaussian Blur, and Sobel Edges.
+  - **In-Memory Sample Image Generator**: Instant synthetic dataset creation with resolution presets (Fast, Standard, HD, Benchmark) and seed reproducibility.
+  - **Live Progress Reporting**: Granular task progress tracking with configuration and repetition indicators.
+  - **UX Enhancements**: Parameter tooltips, Reset Experiment button, image metadata badges (dimensions, megapixels, memory footprint), and full-size inspection expanders.
+- **Automated PDF Benchmark Report (Module 8)**: Single-click generation of a comprehensive, publication-quality A4 PDF report in memory using ReportLab. Includes executive summaries, hardware details, experiment settings, tabular metrics, Matplotlib scaling charts, automated performance analysis/conclusions, and a full 4-stage image gallery with preserved aspect ratios.
+- **Comprehensive Unit Testing**: Robust Pytest test suite validating filter mathematics, multiprocessing consistency, input validation, in-memory exports, PDF report generation, and UI components.
 
 ---
 
@@ -29,7 +36,7 @@ Status: All 8 modules complete
 - **Data Structures & Metrics**: Pandas
 - **Visualization**: Matplotlib (headless `Agg` backend)
 - **Document & PDF Generation**: ReportLab
-- **Web User Interface**: Streamlit
+- **Web User Interface**: Streamlit (with `streamlit.components.v1`)
 - **Testing Framework**: Pytest
 - **Parallel Computing**: Standard Library `multiprocessing` (Process Pool, `spawn` context)
 
@@ -42,7 +49,7 @@ HPC-Parallel-Image-Processing/
 ├── .gitignore                      # Git exclusion rules for caches, venvs, PDFs, and generated outputs
 ├── AI_USAGE.md                     # Disclosure of AI assistance and student verification log
 ├── README.md                       # Comprehensive project documentation
-├── app.py                          # Streamlit web dashboard with PDF report download
+├── app.py                          # Streamlit web dashboard with 6 navigation tabs
 ├── pytest.ini                      # Pytest test discovery and path configuration
 ├── requirements.txt                # Package dependencies with lower bounds
 ├── docs/
@@ -70,7 +77,12 @@ HPC-Parallel-Image-Processing/
 │   ├── pdf_report.py               # Automated A4 PDF benchmark report generator (Module 8)
 │   ├── pipeline.py                 # Picklable single-image transformation pipeline
 │   ├── plots.py                    # Matplotlib chart generators and export CLI
-│   └── sequential.py               # Single-core baseline batch processor and CLI
+│   ├── sample_generator.py         # In-memory sample image generator with presets (Module 9)
+│   ├── sequential.py               # Single-core baseline batch processor and CLI
+│   └── ui/
+│       ├── __init__.py             # Package marker for ui module
+│       ├── components.py           # Custom CSS styling, metric cards, and comparison slider
+│       └── tabs.py                 # Modular tab renderers for the 6 application sections
 └── tests/
     ├── __init__.py                 # Package marker for tests
     ├── conftest.py                 # Shared pytest fixtures (synthetic images, real benchmark data)
@@ -80,7 +92,8 @@ HPC-Parallel-Image-Processing/
     ├── test_metrics.py             # Speedup and efficiency formula unit tests
     ├── test_pdf_report.py          # PDF generation, layout, and analysis tests (Module 8)
     ├── test_pipeline.py            # Single-image pipeline and parallel consistency tests
-    └── test_smoke.py               # Initial setup and configuration smoke test
+    ├── test_smoke.py               # Initial setup and configuration smoke test
+    └── test_ui_and_sample_gen.py   # UI components and in-memory sample generator tests (Module 9)
 ```
 
 ---
@@ -109,7 +122,7 @@ Follow these steps in your terminal to configure the environment:
    pip install -r requirements.txt
    ```
 
-5. **Generate synthetic benchmark images:**
+5. **Generate synthetic benchmark images (optional, or generate inside the app):**
    ```bash
    python scripts/generate_sample_images.py --count 12 --width 2000 --height 1500
    ```
@@ -118,12 +131,15 @@ Follow these steps in your terminal to configure the environment:
 
 ## How to Run
 
-### 1. Interactive Streamlit Dashboard
-Launch the web interface in your browser:
+### 1. Interactive Streamlit Dashboard (Module 9)
+Launch the modern laboratory web interface in your browser:
 ```bash
 streamlit run app.py
 ```
-*After running a benchmark, click **📥 Download Complete Benchmark Report (PDF)** to download the generated PDF report.*
+- Navigate between **Overview**, **Image Processing**, **Performance Analytics**, **System Monitor**, **Benchmark History**, and **Reports**.
+- Use the sidebar to generate synthetic sample images or upload your own files.
+- Inspect the interactive before-and-after comparison slider.
+- Download the complete publication-quality PDF report from the **Reports** tab.
 
 ### 2. Sequential Processing CLI
 Run the single-core baseline pipeline on a folder of images:
@@ -150,7 +166,7 @@ python -m src.plots --csv results/benchmark_results.csv --out results/plots
 ```
 
 ### 6. Automated Pytest Test Suite
-Execute all unit, integration, and mathematical correctness tests:
+Execute all unit, integration, mathematical, and UI tests:
 ```bash
 pytest -v
 ```
