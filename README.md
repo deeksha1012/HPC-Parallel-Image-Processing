@@ -6,7 +6,7 @@ A High Performance Computing (HPC) research and laboratory platform evaluating s
 The application applies pure-NumPy grayscale conversion, 2-pass separable Gaussian blur filtering, and 3x3 Sobel gradient edge detection across image collections.
 It systematically evaluates wall-clock execution times, speedup factors ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$) through a modern Streamlit laboratory dashboard, command-line interfaces, and automated publication-quality PDF report generation.
 
-Status: All 9 modules complete
+Status: All 10 modules complete
 
 ---
 
@@ -16,6 +16,14 @@ Status: All 9 modules complete
 - **Data-Parallel Multiprocessing**: Scalable batch execution leveraging Python's standard `multiprocessing` library using the macOS-safe `spawn` process start method.
 - **Fair Benchmarking Protocol**: Features an untimed sequential warm-up pass, multi-trial repetition, and end-to-end wall-clock timing that accounts for process creation latency and inter-process communication (IPC) serialization overhead.
 - **HPC Metric Evaluation**: Automated measurement of execution time, parallel speedup ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$).
+- **HPC System Monitoring and Performance Intelligence (Module 10)**:
+  - **Hardware Information Panel**: Cross-platform auto-detection of processor brand (Apple Silicon M4 aware), architecture, physical vs logical cores, total and available RAM, operating system, and Python version using `psutil`, `platform`, and `os` without hardcoded specs.
+  - **Real-Time CPU & Memory Monitoring**: Thread-safe background resource monitor (`ResourceMonitor`) capturing system CPU %, per-core CPU %, used RAM (MB), and memory percentage at user-configured sampling intervals (0.1s - 0.5s) with zero benchmarking interference.
+  - **Worker Process Visualization**: Aggregation and visualization of actual OS worker Process IDs (PIDs) from image pipeline tasks, displaying load distribution, individual task runtimes, and workload share per worker.
+  - **Performance Intelligence Engine**: Rule-based analytical reasoning engine (`src/intelligence.py`) analyzing speedup, efficiency degradation, Amdahl's Law, Apple Silicon P-core vs E-core scheduling, and providing optimal worker count recommendations with transparent technical justifications (100% offline, no cloud AI).
+  - **Persistent Benchmark History (SQLite)**: SQLite database (`results/benchmark_history.db`) archiving experiment configurations, scaling metrics, and resource telemetry, featuring search/filter, multi-run trend progression charts, single-run inspection, and CSV export.
+  - **Advanced HPC Analytics**: Comprehensive evaluation of throughput (Images/sec, Megapixels/sec), execution runtime variability ($CV = \sigma / \mu \times 100\%$), ideal speedup, and speedup deficit.
+  - **Telemetry-Enriched PDF Reports**: Automated embedding of extended hardware specifications, throughput tables, worker PID allocation tables, resource telemetry summaries, and intelligence recommendations in the publication-grade PDF report.
 - **Advanced Interactive Frontend (Module 9)**:
   - **Laboratory Redesign**: Modern card layout, accent badges, responsive typography, and full compatibility with light and dark themes.
   - **6 Dedicated Navigation Tabs**: Overview, Image Processing, Performance Analytics, System Monitor (Module 10 preview), Benchmark History (Module 10 preview), and Reports.
@@ -37,6 +45,8 @@ Status: All 9 modules complete
 - **Visualization**: Matplotlib (headless `Agg` backend)
 - **Document & PDF Generation**: ReportLab
 - **Web User Interface**: Streamlit (with `streamlit.components.v1`)
+- **System Telemetry & Hardware Profiling**: `psutil`
+- **Database & Experiment Persistence**: SQLite3 (Python Standard Library)
 - **Testing Framework**: Pytest
 - **Parallel Computing**: Standard Library `multiprocessing` (Process Pool, `spawn` context)
 
@@ -71,10 +81,13 @@ HPC-Parallel-Image-Processing/
 │   ├── config.py                   # Central paths, constants, and default parameters
 │   ├── export.py                   # In-memory byte serialization (PNG, CSV, ZIP)
 │   ├── filters.py                  # Pure-NumPy grayscale, Gaussian blur, and Sobel filters
+│   ├── history.py                  # SQLite benchmark experiment archive and manager (Module 10)
 │   ├── image_io.py                 # Image loading, folder discovery, and saving helpers
+│   ├── intelligence.py             # Rule-based HPC performance intelligence engine (Module 10)
 │   ├── metrics.py                  # Speedup and efficiency calculation functions
+│   ├── monitor.py                  # Hardware auto-detection & background resource sampler (Module 10)
 │   ├── parallel.py                 # Data-parallel batch processor using worker pools
-│   ├── pdf_report.py               # Automated A4 PDF benchmark report generator (Module 8)
+│   ├── pdf_report.py               # Automated A4 PDF benchmark report generator (Modules 8 & 10)
 │   ├── pipeline.py                 # Picklable single-image transformation pipeline
 │   ├── plots.py                    # Matplotlib chart generators and export CLI
 │   ├── sample_generator.py         # In-memory sample image generator with presets (Module 9)
@@ -90,6 +103,7 @@ HPC-Parallel-Image-Processing/
     ├── test_export_and_plots.py    # In-memory export serialization and plot creation tests
     ├── test_filters.py             # Filter mathematical correctness and boundary tests
     ├── test_metrics.py             # Speedup and efficiency formula unit tests
+    ├── test_monitoring_and_history.py # Telemetry, intelligence, and SQLite tests (Module 10)
     ├── test_pdf_report.py          # PDF generation, layout, and analysis tests (Module 8)
     ├── test_pipeline.py            # Single-image pipeline and parallel consistency tests
     ├── test_smoke.py               # Initial setup and configuration smoke test

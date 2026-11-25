@@ -40,6 +40,12 @@ from reportlab.platypus import (
 )
 
 from src.plots import plot_efficiency, plot_execution_time, plot_speedup
+from src.intelligence import compute_throughput_metrics
+from src.monitor import (
+    aggregate_worker_distribution,
+    plot_cpu_utilization,
+    plot_memory_utilization,
+)
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -242,6 +248,9 @@ def generate_benchmark_pdf(
     original_images: list[tuple[str, np.ndarray]],
     params: dict[str, Any],
     system_info: Optional[dict[str, Any]] = None,
+    monitor_summary: Optional[dict[str, Any]] = None,
+    monitor_history: Optional[pd.DataFrame] = None,
+    intelligence: Optional[dict[str, Any]] = None,
 ) -> bytes:
     """
     Generate a complete, publication-ready A4 PDF report in memory.
@@ -361,7 +370,12 @@ def generate_benchmark_pdf(
     timestamp_str = system_info.get("timestamp", datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"))
     platform_str = system_info.get("platform", "macOS")
     arch_str = system_info.get("machine", "arm64")
-    cores_str = str(system_info.get("cpu_count", "N/A"))
+    processor_str = str(system_info.get("processor", "Apple Silicon" if arch_str == "arm64" else "CPU"))
+    phys_cores = system_info.get("physical_cores", system_info.get("cpu_count", "N/A"))
+    log_cores = system_info.get("logical_cores", system_info.get("cpu_count", "N/A"))
+    total_ram = system_info.get("total_ram_gb")
+    avail_ram = system_info.get("available_ram_gb")
+    ram_str = f"{total_ram:.1f} GB ({avail_ram:.1f} GB avail)" if total_ram else "N/A"
     py_ver = system_info.get("python_version", "3.12")
     start_method = system_info.get("start_method", "spawn")
 
@@ -369,20 +383,20 @@ def generate_benchmark_pdf(
         [
             Paragraph("<b>Report Generated:</b>", body_style),
             Paragraph(str(timestamp_str), body_style),
-            Paragraph("<b>CPU Core Count:</b>", body_style),
-            Paragraph(f"{cores_str} logical cores", body_style),
+            Paragraph("<b>Processor:</b>", body_style),
+            Paragraph(processor_str, body_style),
         ],
         [
             Paragraph("<b>Platform & OS:</b>", body_style),
             Paragraph(f"{platform_str} ({arch_str})", body_style),
-            Paragraph("<b>Process Start Method:</b>", body_style),
-            Paragraph(str(start_method), body_style),
+            Paragraph("<b>CPU Core Cores:</b>", body_style),
+            Paragraph(f"{phys_cores} phys / {log_cores} log", body_style),
         ],
         [
             Paragraph("<b>Python Runtime:</b>", body_style),
-            Paragraph(f"v{py_ver}", body_style),
-            Paragraph("<b>Execution Model:</b>", body_style),
-            Paragraph("Data-Parallel Process Pool", body_style),
+            Paragraph(f"v{py_ver} ({start_method})", body_style),
+            Paragraph("<b>System Memory (RAM):</b>", body_style),
+            Paragraph(ram_str, body_style),
         ],
     ]
     meta_table = Table(meta_data, colWidths=[110, 150, 110, 145])
@@ -524,7 +538,95 @@ def generate_benchmark_pdf(
         )
     )
     story.append(results_table)
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
+
+    # Throughput & Variability Table
+    df_aug = compute_throughput_metrics(df)
+    story.append(Paragraph("<b>Throughput & Execution Variability</b>", h2_style))
+    tp_headers = [
+        Paragraph("<b>Mode</b>", table_cell_bold),
+        Paragraph("<b>Workers</b>", table_cell_bold),
+        Paragraph("<b>Mean Time</b>", table_cell_bold),
+        Paragraph("<b>Throughput (img/s)</b>", table_cell_bold),
+        Paragraph("<b>Throughput (MP/s)</b>", table_cell_bold),
+        Paragraph("<b>CV (%)</b>", table_cell_bold),
+        Paragraph("<b>Ideal Sp</b>", table_cell_bold),
+        Paragraph("<b>Deficit</b>", table_cell_bold),
+    ]
+    tp_rows = [tp_headers]
+    for _, r in df_aug.iterrows():
+        tp_rows.append(
+            [
+                Paragraph(str(r["mode"]), table_cell_style),
+                Paragraph(str(int(r["workers"])), table_cell_style),
+                Paragraph(f"{float(r['mean_time_s']):.3f} s", table_cell_style),
+                Paragraph(f"{float(r['throughput_images_per_s']):.2f}", table_cell_style),
+                Paragraph(f"{float(r['throughput_mp_per_s']):.2f}", table_cell_style),
+                Paragraph(f"{float(r['cv_percent']):.1f}%", table_cell_style),
+                Paragraph(f"{float(r['ideal_speedup']):.1f}x", table_cell_style),
+                Paragraph(f"{float(r['speedup_deficit']):.2f}x", table_cell_style),
+            ]
+        )
+    tp_table = Table(tp_rows, colWidths=[65, 45, 65, 85, 85, 55, 55, 60])
+    tp_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#1e293b")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+            ]
+        )
+    )
+    story.append(tp_table)
+    story.append(Spacer(1, 8))
+
+    # Worker Process Task Allocation Table
+    if last_results:
+        worker_df = aggregate_worker_distribution(last_results)
+        if not worker_df.empty:
+            story.append(Paragraph("<b>Worker Process PID Task Distribution</b>", h2_style))
+            w_headers = [
+                Paragraph("<b>Worker PID</b>", table_cell_bold),
+                Paragraph("<b>Tasks Handled</b>", table_cell_bold),
+                Paragraph("<b>Total Time (s)</b>", table_cell_bold),
+                Paragraph("<b>Mean Time / Img (s)</b>", table_cell_bold),
+                Paragraph("<b>Workload Share (%)</b>", table_cell_bold),
+            ]
+            w_rows = [w_headers]
+            for _, wr in worker_df.iterrows():
+                w_rows.append(
+                    [
+                        Paragraph(f"PID {int(wr['pid'])}", table_cell_style),
+                        Paragraph(str(int(wr["tasks_processed"])), table_cell_style),
+                        Paragraph(f"{float(wr['total_time_s']):.3f} s", table_cell_style),
+                        Paragraph(f"{float(wr['mean_time_s']):.3f} s", table_cell_style),
+                        Paragraph(f"{float(wr['task_share_pct']):.1f}%", table_cell_style),
+                    ]
+                )
+            w_table = Table(w_rows, colWidths=[100, 105, 105, 105, 100])
+            w_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+                        ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#334155")),
+                        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ]
+                )
+            )
+            story.append(w_table)
+            story.append(Spacer(1, 10))
 
     # =========================================================================
     # 4. Best Configuration & Automated Performance Analysis
@@ -533,7 +635,11 @@ def generate_benchmark_pdf(
     best_summary, analysis_html, _ = _generate_performance_analysis_text(df)
 
     # Highlight Callout Box
-    callout_data = [[Paragraph(f"<b>KEY FINDING:</b> {best_summary}", body_style)]]
+    key_finding_text = f"<b>KEY FINDING:</b> {best_summary}"
+    if intelligence and intelligence.get("recommendation_reason"):
+        key_finding_text += f"<br/><br/><b>RECOMMENDATION:</b> {intelligence['recommendation_reason']}"
+
+    callout_data = [[Paragraph(key_finding_text, body_style)]]
     callout_table = Table(callout_data, colWidths=[515])
     callout_table.setStyle(
         TableStyle(
@@ -551,7 +657,37 @@ def generate_benchmark_pdf(
     story.append(Spacer(1, 8))
 
     story.append(Paragraph(analysis_html, body_style))
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 10))
+
+    # Telemetry Observations Callout if monitor summary exists
+    if monitor_summary:
+        avg_cpu = monitor_summary.get("avg_cpu_percent", 0.0)
+        peak_cpu = monitor_summary.get("peak_cpu_percent", 0.0)
+        peak_ram = monitor_summary.get("peak_memory_mb", 0.0)
+        ram_growth = monitor_summary.get("memory_growth_mb", 0.0)
+        dur = monitor_summary.get("duration_seconds", 0.0)
+
+        telem_text = (
+            f"<b>Hardware Telemetry Observations:</b> Total monitored runtime was <b>{dur:.2f} s</b>. "
+            f"Average CPU utilization across all cores was <b>{avg_cpu:.1f}%</b> (peak: <b>{peak_cpu:.1f}%</b>). "
+            f"Peak memory consumption reached <b>{peak_ram:.1f} MB</b> with net memory growth of <b>{ram_growth:.1f} MB</b>. "
+            f"{'⚠️ High memory warning was triggered (>85% RAM).' if monitor_summary.get('high_memory_warning') else 'System memory remained well within safe operational headroom.'}"
+        )
+        telem_table = Table([[Paragraph(telem_text, body_style)]], colWidths=[515])
+        telem_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f0fdf4")),
+                    ("BOX", (0, 0), (-1, -1), 1, colors.HexColor("#10b981")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
+        story.append(telem_table)
+        story.append(Spacer(1, 10))
 
     # =========================================================================
     # 5. Performance Graphs
@@ -601,6 +737,29 @@ def generate_benchmark_pdf(
             caption_style,
         ),
     ]))
+
+    # Telemetry Visualizations (Figures 4 & 5) if history is available
+    if monitor_history is not None and not monitor_history.empty and len(monitor_history) > 1:
+        story.append(Spacer(1, 6))
+        fig_cpu = plot_cpu_utilization(monitor_history)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 4: Real-Time CPU Utilization Timeline</b>", h2_style),
+            _render_matplotlib_chart(fig_cpu, width_pt=515, height_pt=180),
+            Paragraph(
+                "<i>Note: System-wide CPU percentage and individual execution core traces recorded by the background monitor.</i>",
+                caption_style,
+            ),
+        ]))
+        story.append(Spacer(1, 6))
+        fig_mem = plot_memory_utilization(monitor_history)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 5: Real-Time Virtual Memory (RAM) Footprint</b>", h2_style),
+            _render_matplotlib_chart(fig_mem, width_pt=515, height_pt=180),
+            Paragraph(
+                "<i>Note: Tracks physical RAM consumption (MB) and total utilization percentage during data-parallel execution.</i>",
+                caption_style,
+            ),
+        ]))
 
     # =========================================================================
     # 6. Processed Images Gallery (All Uploaded Images)

@@ -21,6 +21,12 @@ venv/
 # PDF generated reports
 *.pdf
 
+# SQLite database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
 # Project generated folders (keep directories via .gitkeep, ignore generated content)
 sample_images/*
 !sample_images/.gitkeep

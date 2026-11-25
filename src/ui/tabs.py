@@ -2,12 +2,12 @@
 Modular Streamlit tab renderers for the HPC Image Processing Lab.
 
 Organizes the application interface into 6 dedicated, clean views:
-1. Overview: Executive summary cards, workflow guide, and quick metrics.
-2. Image Processing: 4-stage gallery, interactive before/after slider, full previews.
-3. Performance Analytics: Scaling charts, speedup comparisons, and metrics table.
-4. System Monitor: Hardware profiling and Module 10 feature preview.
-5. Benchmark History: Historical run management and Module 10 feature preview.
-6. Reports: Export center for PDF report, CSV data, ZIP archive, and charts.
+1. Overview: Executive summary cards, workload guide, and performance intelligence highlights.
+2. Image Processing: 4-stage gallery, interactive before/after comparison slider, and full-resolution inspection.
+3. Performance Analytics: Scaling charts, speedup curves, throughput metrics, worker PID distribution, and intelligence recommendations.
+4. System Monitor: Cross-platform hardware profiling, real-time CPU/RAM gauges, post-benchmark telemetry charts, and architectural insights.
+5. Benchmark History: SQLite persistent experiment archive, filtering, multi-run trend charts, experiment inspection, and CSV export.
+6. Reports: Export center for comprehensive PDF report, CSV data, ZIP image archive, and Matplotlib graphs.
 """
 
 from pathlib import Path
@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import psutil
 import streamlit as st
 
 from src.export import (
@@ -22,6 +23,20 @@ from src.export import (
     dataframe_to_csv_bytes,
     figure_to_png_bytes,
     image_to_png_bytes,
+)
+from src.history import (
+    clear_all_experiments,
+    delete_experiment,
+    export_history_to_csv_bytes,
+    get_all_experiments,
+    get_experiment_details,
+)
+from src.intelligence import compute_throughput_metrics
+from src.monitor import (
+    aggregate_worker_distribution,
+    plot_cpu_utilization,
+    plot_memory_utilization,
+    plot_worker_task_distribution,
 )
 from src.pdf_report import generate_benchmark_pdf
 from src.plots import plot_efficiency, plot_execution_time, plot_speedup
@@ -39,8 +54,10 @@ def render_overview_tab(
     system_info: Dict[str, Any],
     params: Dict[str, Any],
     selected_workers: List[int],
+    intelligence: Optional[Dict[str, Any]] = None,
+    monitor_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Render the Overview tab with executive summary cards and workload statistics."""
+    """Render the Overview tab with executive summary cards, workload statistics, and intelligence highlights."""
     st.markdown("### 📊 Lab Overview & Executive Dashboard")
     st.write(
         "A high-performance computing evaluation platform designed to benchmark pure-NumPy "
@@ -94,7 +111,8 @@ def render_overview_tab(
     with c2:
         render_metric_card("Total Workload", f"{total_mp:.2f} MP", f"{total_pixels:,} total pixels", icon="📐")
     with c3:
-        render_metric_card("Available Cores", f"{cpu_cores}", f"Architecture: {system_info.get('machine', 'arm64')}", icon="🖥️")
+        proc_str = system_info.get("processor", system_info.get("machine", "arm64"))
+        render_metric_card("CPU Hardware", f"{cpu_cores} Cores", f"{proc_str}", icon="🖥️")
     with c4:
         render_metric_card("Selected Workers", f"[{workers_text}]", "Active allocation list", icon="⚙️")
 
@@ -106,8 +124,13 @@ def render_overview_tab(
     with c7:
         render_metric_card("Best Configuration", best_config_str, best_config_sub, icon="🏆")
     with c8:
-        repeats_val = int(df["runs"].iloc[0]) if df is not None and not df.empty else params.get("repeats", 3)
-        render_metric_card("Benchmark Repeats", f"{repeats_val} Runs", "Per configuration trial", icon="🔁")
+        if monitor_summary:
+            avg_cpu = monitor_summary.get("avg_cpu_percent", 0.0)
+            peak_ram = monitor_summary.get("peak_memory_mb", 0.0)
+            render_metric_card("Resource Usage", f"{avg_cpu:.1f}% CPU", f"Peak RAM: {peak_ram:.0f} MB", icon="📊")
+        else:
+            repeats_val = int(df["runs"].iloc[0]) if df is not None and not df.empty else params.get("repeats", 3)
+            render_metric_card("Benchmark Repeats", f"{repeats_val} Runs", "Per configuration trial", icon="🔁")
 
     st.markdown("---")
 
@@ -117,12 +140,20 @@ def render_overview_tab(
             f"""
             <div class="hpc-callout-success">
                 <b>Benchmark Active:</b> Completed execution across <b>{len(df)} configurations</b>.
-                Explore the <b>Image Processing</b> tab for filter comparisons, <b>Performance Analytics</b> for speedup curves,
-                or <b>Reports</b> to download the publication-quality PDF report.
+                Explore the <b>Image Processing</b> tab for filter comparisons, <b>Performance Analytics</b> for speedup curves & worker distribution,
+                <b>System Monitor</b> for live/telemetry profiles, or <b>Reports</b> to download the publication-quality PDF report.
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        # Performance Intelligence Callout Banner on Overview
+        if intelligence and intelligence.get("key_takeaways"):
+            with st.expander("💡 Performance Intelligence Summary & Key Findings", expanded=True):
+                st.markdown(f"**Recommended Configuration:** {intelligence.get('recommendation_reason', '')}")
+                st.markdown("**Key Takeaways:**")
+                for item in intelligence.get("key_takeaways", []):
+                    st.markdown(f"- {item}", unsafe_allow_html=True)
     elif loaded_images:
         st.markdown(
             """
@@ -154,7 +185,9 @@ def render_overview_tab(
                using Python's `multiprocessing` library under the macOS-safe `spawn` context.
             3. **Speedup ($S_p$) & Efficiency ($E_p$)**:
                $$\\text{Speedup } S_p = \\frac{T_1}{T_p}, \\quad \\text{Efficiency } E_p = \\frac{S_p}{p}$$
-            4. **Amdahl's Law & IPC Friction**: For small image sets, inter-process pickling and process creation
+            4. **Throughput Metrics**:
+               $$\\text{Throughput}_{\\text{images}} = \\frac{N}{T_p} \\quad (\\text{images/s}), \\quad \\text{Throughput}_{\\text{MP}} = \\frac{\\text{MP}}{T_p} \\quad (\\text{MP/s})$$
+            5. **Amdahl's Law & IPC Friction**: For small image sets, inter-process pickling and process creation
                can exceed computational savings, yielding speedup below 1.0. Larger workloads amortize this overhead.
             """
         )
@@ -317,8 +350,12 @@ def render_image_processing_tab(
         st.image(res["edges"], use_container_width=True)
 
 
-def render_analytics_tab(df: Optional[pd.DataFrame]) -> None:
-    """Render the Performance Analytics tab with scaling charts, highlights, and tabular metrics."""
+def render_analytics_tab(
+    df: Optional[pd.DataFrame],
+    last_results: Optional[List[Dict[str, Any]]] = None,
+    intelligence: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Render the Performance Analytics tab with scaling charts, throughput metrics, worker PID distribution, and intelligence."""
     st.markdown("### ⚡ HPC Scaling & Performance Analytics")
 
     if df is None or df.empty:
@@ -372,6 +409,20 @@ def render_analytics_tab(df: Optional[pd.DataFrame]) -> None:
                 unsafe_allow_html=True,
             )
 
+    # Performance Intelligence Recommendation Box
+    if intelligence:
+        st.markdown(
+            f"""
+            <div class="hpc-callout-info">
+                <div style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">
+                    💡 Performance Intelligence Recommendation
+                </div>
+                <div>{intelligence.get('recommendation_reason', '')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     # Performance Charts
     st.markdown("#### 📈 Scaling Visualizations")
     tab_time, tab_speedup, tab_eff = st.tabs(["Execution Time", "Speedup Curve", "Parallel Efficiency"])
@@ -405,6 +456,76 @@ def render_analytics_tab(df: Optional[pd.DataFrame]) -> None:
 
     st.markdown("---")
 
+    # HPC Throughput & Variability Table
+    st.markdown("#### 🚀 HPC Throughput & Runtime Variability")
+    st.write(
+        "Throughput quantifies work completed per unit time. Coefficient of Variation ($CV = \\sigma / \\mu \\times 100\\%$) "
+        "measures runtime stability across repeated trials."
+    )
+    df_aug = compute_throughput_metrics(df)
+    tp_display = df_aug[
+        [
+            "mode",
+            "workers",
+            "mean_time_s",
+            "throughput_images_per_s",
+            "throughput_mp_per_s",
+            "cv_percent",
+            "ideal_speedup",
+            "speedup_deficit",
+        ]
+    ].copy()
+    tp_display.columns = [
+        "Mode",
+        "Workers",
+        "Mean Time (s)",
+        "Throughput (Images/s)",
+        "Throughput (MP/s)",
+        "Variability (CV %)",
+        "Ideal Speedup",
+        "Speedup Deficit",
+    ]
+    tp_display["Mean Time (s)"] = tp_display["Mean Time (s)"].map(lambda x: f"{x:.3f}")
+    tp_display["Throughput (Images/s)"] = tp_display["Throughput (Images/s)"].map(lambda x: f"{x:.2f}")
+    tp_display["Throughput (MP/s)"] = tp_display["Throughput (MP/s)"].map(lambda x: f"{x:.2f}")
+    tp_display["Variability (CV %)"] = tp_display["Variability (CV %)"].map(lambda x: f"{x:.2f}%")
+    tp_display["Ideal Speedup"] = tp_display["Ideal Speedup"].map(lambda x: f"{x:.1f}x")
+    tp_display["Speedup Deficit"] = tp_display["Speedup Deficit"].map(lambda x: f"{x:.2f}x")
+    st.dataframe(tp_display, use_container_width=True)
+
+    st.markdown("---")
+
+    # Worker Process Task Allocation (Real PIDs)
+    if last_results:
+        st.markdown("#### 👥 Worker Process Task Allocation")
+        st.write(
+            "Visual inspection of actual worker OS Process IDs (PIDs) that executed image processing tasks, "
+            "confirming data-parallel load distribution."
+        )
+        col_w_chart, col_w_table = st.columns([1, 1])
+        with col_w_chart:
+            fig_worker = plot_worker_task_distribution(last_results)
+            st.pyplot(fig_worker)
+            plt.close(fig_worker)
+
+        with col_w_table:
+            w_df = aggregate_worker_distribution(last_results)
+            if not w_df.empty:
+                w_disp = w_df.copy()
+                w_disp.columns = [
+                    "Worker PID",
+                    "Tasks Processed",
+                    "Total Time (s)",
+                    "Mean Time / Img (s)",
+                    "Task Share (%)",
+                ]
+                w_disp["Total Time (s)"] = w_disp["Total Time (s)"].map(lambda x: f"{x:.3f}")
+                w_disp["Mean Time / Img (s)"] = w_disp["Mean Time / Img (s)"].map(lambda x: f"{x:.3f}")
+                w_disp["Task Share (%)"] = w_disp["Task Share (%)"].map(lambda x: f"{x:.1f}%")
+                st.dataframe(w_disp, use_container_width=True)
+
+    st.markdown("---")
+
     # Complete Metrics Table
     st.markdown("#### 📋 Complete Benchmark Metrics Table")
     display_df = df.copy()
@@ -433,25 +554,101 @@ def render_analytics_tab(df: Optional[pd.DataFrame]) -> None:
     st.dataframe(display_df, use_container_width=True)
 
 
-def render_system_monitor_tab(system_info: Dict[str, Any]) -> None:
-    """Render the System Monitor tab with hardware specs and Module 10 feature preview."""
+def render_system_monitor_tab(
+    system_info: Dict[str, Any],
+    monitor_history: Optional[pd.DataFrame] = None,
+    monitor_summary: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Render the System Monitor tab with hardware specs, real-time gauges, and telemetry timelines."""
     st.markdown("### 🖥️ System Monitor & Hardware Profiling")
-
-    st.info(
-        "ℹ️ **Feature Preview:** Live CPU core utilization, dynamic memory telemetry, and real-time thermals "
-        "are scheduled for implementation in **Module 10**. Below is the static hardware and execution profile for this machine."
+    st.write(
+        "Real-time CPU and memory telemetry recorded during benchmark execution, combined with "
+        "cross-platform hardware auto-detection."
     )
 
+    # 1. Hardware Specifications Panel
+    st.markdown("#### 💻 Hardware Specifications")
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        render_metric_card("CPU Core Count", f"{system_info.get('cpu_count', 'N/A')}", "Logical execution cores", icon="🧠")
+        proc_name = system_info.get("processor", "Apple Silicon")
+        render_metric_card("Processor", str(proc_name), system_info.get("platform", "macOS"), icon="🧠")
     with m2:
-        render_metric_card("Architecture", f"{system_info.get('machine', 'arm64')}", "Apple Silicon native", icon="🏗️")
+        arch = system_info.get("machine", "arm64")
+        phys = system_info.get("physical_cores", system_info.get("cpu_count", "N/A"))
+        log = system_info.get("logical_cores", system_info.get("cpu_count", "N/A"))
+        render_metric_card("CPU Cores", f"{phys}P / {log}L", f"Architecture: {arch}", icon="🏗️")
     with m3:
-        render_metric_card("Python Runtime", f"v{system_info.get('python_version', '3.12')}", "CPython interpreter", icon="🐍")
+        total_ram = system_info.get("total_ram_gb")
+        avail_ram = system_info.get("available_ram_gb")
+        ram_label = f"{total_ram:.1f} GB Total" if total_ram else "N/A"
+        ram_sub = f"{avail_ram:.1f} GB Available" if avail_ram else "RAM"
+        render_metric_card("System Memory", ram_label, ram_sub, icon="💾")
     with m4:
-        render_metric_card("Start Method", f"{system_info.get('start_method', 'spawn')}", "macOS thread-safe", icon="🚀")
+        py_ver = system_info.get("python_version", "3.12")
+        sm = system_info.get("start_method", "spawn")
+        render_metric_card("Runtime", f"Python {py_ver}", f"MP Start: {sm}", icon="🐍")
 
+    st.markdown("---")
+
+    # 2. Real-Time Instantaneous Gauges
+    st.markdown("#### ⚡ Live System Resource Telemetry")
+    live_c1, live_c2 = st.columns(2)
+
+    current_cpu = psutil.cpu_percent(interval=None)
+    vm = psutil.virtual_memory()
+    current_ram_pct = vm.percent
+    current_ram_used_gb = vm.used / (1024.0**3)
+
+    with live_c1:
+        st.markdown(f"**Current System CPU Utilization:** `{current_cpu:.1f}%`")
+        st.progress(min(1.0, current_cpu / 100.0))
+
+    with live_c2:
+        st.markdown(f"**Current System RAM Utilization:** `{current_ram_pct:.1f}%` ({current_ram_used_gb:.2f} GB used)")
+        st.progress(min(1.0, current_ram_pct / 100.0))
+
+    st.markdown("---")
+
+    # 3. Post-Benchmark Monitoring Telemetry Timelines
+    st.markdown("#### 📊 Monitored Benchmark Resource Telemetry")
+    if monitor_history is not None and not monitor_history.empty and len(monitor_history) > 1:
+        # Telemetry summary cards
+        if monitor_summary:
+            t1, t2, t3, t4 = st.columns(4)
+            with t1:
+                render_metric_card("Monitored Duration", f"{monitor_summary.get('duration_seconds', 0.0):.2f} s", f"{monitor_summary.get('samples_count', 0)} samples collected", icon="⏱️")
+            with t2:
+                render_metric_card("Average CPU", f"{monitor_summary.get('avg_cpu_percent', 0.0):.1f}%", f"Peak: {monitor_summary.get('peak_cpu_percent', 0.0):.1f}%", icon="⚡")
+            with t3:
+                render_metric_card("Peak Memory", f"{monitor_summary.get('peak_memory_mb', 0.0):.0f} MB", f"{monitor_summary.get('peak_memory_percent', 0.0):.1f}% of total RAM", icon="📈")
+            with t4:
+                render_metric_card("Memory Growth", f"{monitor_summary.get('memory_growth_mb', 0.0):.1f} MB", "During pool execution", icon="🌱")
+
+            if monitor_summary.get("high_memory_warning"):
+                st.warning("⚠️ **High Memory Utilization Warning:** RAM usage exceeded 85% during benchmark execution.")
+
+        tab_cpu_plot, tab_mem_plot = st.tabs(["CPU Utilization Timeline", "RAM Consumption Timeline"])
+        with tab_cpu_plot:
+            fig_cpu = plot_cpu_utilization(monitor_history)
+            st.pyplot(fig_cpu)
+            plt.close(fig_cpu)
+            st.caption(
+                "Shows system-wide CPU utilization alongside individual execution cores over the duration of the benchmark."
+            )
+
+        with tab_mem_plot:
+            fig_mem = plot_memory_utilization(monitor_history)
+            st.pyplot(fig_mem)
+            plt.close(fig_mem)
+            st.caption(
+                "Tracks resident set memory footprint and RAM percentage over time."
+            )
+    else:
+        st.info("👈 Run a benchmark from the sidebar with **Enable Real-Time Monitoring** checked to view telemetry charts.")
+
+    st.markdown("---")
+
+    # 4. Architecture & Resource Dynamics
     st.markdown("#### 🔬 Architecture & Resource Dynamics")
     col_a, col_b = st.columns(2)
 
@@ -463,7 +660,7 @@ def render_system_monitor_tab(system_info: Dict[str, Any]) -> None:
                 <div style="font-size: 0.9rem; line-height: 1.4; opacity: 0.9;">
                     Apple M-series processors combine <b>Performance (P-cores)</b> and <b>Efficiency (E-cores)</b>.
                     When parallel worker allocations exceed the P-core count, macOS dispatches tasks onto E-cores
-                    operating at lower frequencies, introducing scheduling desynchronization.
+                    operating at lower clock frequencies, introducing scheduling desynchronization where fast cores wait for slower cores.
                 </div>
             </div>
             """,
@@ -476,8 +673,8 @@ def render_system_monitor_tab(system_info: Dict[str, Any]) -> None:
             <div class="hpc-card">
                 <div class="hpc-card-title">📦 Inter-Process Communication (IPC)</div>
                 <div style="font-size: 0.9rem; line-height: 1.4; opacity: 0.9;">
-                    Under the <code>spawn</code> method, each worker is a brand-new Python process.
-                    Passing raw image buffers requires pickling NumPy arrays into byte streams across OS pipes,
+                    Under the <code>spawn</code> method, each worker is an independent Python interpreter process.
+                    Passing raw image buffers requires serializing (pickling) NumPy arrays across OS pipes,
                     consuming CPU memory bandwidth before filtering computation begins.
                 </div>
             </div>
@@ -486,28 +683,122 @@ def render_system_monitor_tab(system_info: Dict[str, Any]) -> None:
         )
 
 
-def render_history_tab(df: Optional[pd.DataFrame]) -> None:
-    """Render the Benchmark History tab with session archive and Module 10 feature preview."""
-    st.markdown("### 📜 Benchmark History & Experiment Archive")
-
-    st.info(
-        "ℹ️ **Feature Preview:** Persistent historical experiment tracking, SQLite/JSON session archives, "
-        "and multi-run trend comparisons are scheduled for implementation in **Module 10**."
+def render_history_tab(
+    df: Optional[pd.DataFrame],
+    current_exp_id: Optional[int] = None,
+) -> None:
+    """Render the Benchmark History tab with SQLite experiment archive, filtering, and export."""
+    st.markdown("### 📜 Benchmark History & SQLite Experiment Archive")
+    st.write(
+        "Persistent local database (`results/benchmark_history.db`) tracking all historical benchmark experiments, "
+        "workload parameters, scaling metrics, and hardware telemetry."
     )
 
-    if df is not None and not df.empty:
-        st.markdown("#### 🕒 Current Session Benchmark Run")
-        st.write("The current session's active benchmark data is preserved in memory:")
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.write("No active benchmark data in the current session. Run a benchmark to view session records.")
+    history_df = get_all_experiments()
 
-    # Check if a previous benchmark file exists on disk
-    saved_csv = Path("results/benchmark_results.csv")
-    if saved_csv.exists():
-        with st.expander("📂 View Previous Saved Benchmark on Disk (results/benchmark_results.csv)"):
-            disk_df = pd.read_csv(saved_csv)
-            st.dataframe(disk_df, use_container_width=True)
+    # History Summary Cards
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        render_metric_card("Total Experiments", f"{len(history_df)}", "Logged in SQLite", icon="🗄️")
+    with h2:
+        cum_mp = history_df["total_megapixels"].sum() if not history_df.empty else 0.0
+        render_metric_card("Total Workload", f"{cum_mp:.1f} MP", "Cumulative processed", icon="📐")
+    with h3:
+        best_sp = history_df["max_speedup"].max() if not history_df.empty else 1.0
+        render_metric_card("Peak Recorded Speedup", f"{best_sp:.2f}x", "Across all runs", icon="🚀")
+    with h4:
+        best_eff = history_df["best_efficiency"].max() * 100.0 if not history_df.empty else 100.0
+        render_metric_card("Peak Recorded Efficiency", f"{best_eff:.1f}%", "Optimal scaling", icon="🏆")
+
+    st.markdown("---")
+
+    if history_df.empty:
+        st.info("No benchmark experiments logged yet. Run a benchmark to record your first experiment!")
+        return
+
+    # Filter Controls
+    st.markdown("#### 🔍 Filter & Search Experiments")
+    f_c1, f_c2 = st.columns(2)
+    with f_c1:
+        max_workload = float(history_df["total_megapixels"].max()) if not history_df.empty else 1.0
+        min_mp = st.slider("Minimum Workload (Megapixels):", min_value=0.0, max_value=max(1.0, max_workload), value=0.0, step=0.1)
+    with f_c2:
+        mode_filter = st.selectbox("Fastest Mode:", options=["All", "Parallel", "Sequential"])
+
+    filtered_df = history_df[history_df["total_megapixels"] >= min_mp]
+    if mode_filter != "All":
+        filtered_df = filtered_df[filtered_df["fastest_mode"] == mode_filter]
+
+    st.markdown(f"**Showing {len(filtered_df)} of {len(history_df)} experiments:**")
+    st.dataframe(filtered_df, use_container_width=True)
+
+    # Multi-Run Trend Chart
+    if len(filtered_df) >= 2:
+        st.markdown("#### 📈 Multi-Run Scaling Trends")
+        fig_trend, ax_trend = plt.subplots(figsize=(8, 3.5), dpi=150)
+        ax_trend.plot(
+            filtered_df["id"],
+            filtered_df["max_speedup"],
+            marker="o",
+            color="#2563eb",
+            linewidth=2.0,
+            label="Peak Speedup (x)",
+        )
+        ax_trend.axhline(1.0, color="#dc2626", linestyle="--", alpha=0.7, label="Sequential Baseline (1.0x)")
+        ax_trend.set_xlabel("Experiment ID", fontsize=10)
+        ax_trend.set_ylabel("Speedup Factor", fontsize=10)
+        ax_trend.set_title("Peak Speedup Progression Across Experiments", fontsize=11, fontweight="bold")
+        ax_trend.grid(True, linestyle="--", alpha=0.5, color="#cbd5e1")
+        ax_trend.legend(loc="upper left", fontsize=9)
+        fig_trend.tight_layout()
+        st.pyplot(fig_trend)
+        plt.close(fig_trend)
+
+    st.markdown("---")
+
+    # Inspect Specific Experiment
+    st.markdown("#### 🔬 Inspect Experiment Details")
+    selected_id = st.selectbox("Select Experiment ID to inspect:", options=history_df["id"].tolist())
+    if selected_id:
+        exp_details = get_experiment_details(int(selected_id))
+        if exp_details:
+            st.write(f"**Experiment #{selected_id}** — Recorded: `{exp_details.get('timestamp')}`")
+            m_df = exp_details.get("metrics_df")
+            if m_df is not None and not m_df.empty:
+                st.dataframe(m_df, use_container_width=True)
+            mon = exp_details.get("monitor_summary")
+            if mon:
+                st.caption(f"Hardware Telemetry: Avg CPU: {mon.get('avg_cpu_percent')}% | Peak RAM: {mon.get('peak_memory_mb')} MB")
+
+    st.markdown("---")
+
+    # History Actions (CSV Export, Delete, Clear)
+    st.markdown("#### ⚙️ History Archive Actions")
+    act_c1, act_c2, act_c3 = st.columns(3)
+
+    with act_c1:
+        csv_bytes = export_history_to_csv_bytes()
+        st.download_button(
+            "📥 Export Full History (CSV)",
+            data=csv_bytes,
+            file_name="benchmark_experiments_history.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with act_c2:
+        if st.button("🗑️ Delete Selected Experiment", use_container_width=True):
+            if delete_experiment(int(selected_id)):
+                st.success(f"Deleted experiment #{selected_id}")
+                st.rerun()
+
+    with act_c3:
+        confirm_clear = st.checkbox("Confirm Clear All History", key="chk_confirm_clear_hist")
+        if confirm_clear:
+            if st.button("⚠️ Clear Entire History DB", use_container_width=True, type="primary"):
+                clear_all_experiments()
+                st.success("All historical experiments cleared.")
+                st.rerun()
 
 
 def render_reports_tab(
@@ -516,6 +807,9 @@ def render_reports_tab(
     loaded_images: List[Tuple[str, np.ndarray]],
     params: Dict[str, Any],
     system_info: Dict[str, Any],
+    monitor_summary: Optional[Dict[str, Any]] = None,
+    monitor_history: Optional[pd.DataFrame] = None,
+    intelligence: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render the Reports tab with organized downloads for PDF, CSV, ZIP, charts, and images."""
     st.markdown("### 📑 Reports & Data Export Center")
@@ -528,7 +822,8 @@ def render_reports_tab(
     st.markdown("#### 📄 Complete Benchmark Report (PDF)")
     st.write(
         "Generate a publication-quality, A4-formatted PDF report containing executive summaries, "
-        "experiment configuration, complete tabular metrics, scaling graphs, automated performance analysis, "
+        "hardware specifications, experiment configuration, complete tabular metrics, throughput tables, "
+        "worker PID distributions, scaling graphs, real-time telemetry timelines, automated performance intelligence, "
         "and the full 4-stage processed image gallery for all uploaded images."
     )
 
@@ -538,6 +833,9 @@ def render_reports_tab(
         original_images=loaded_images,
         params=params,
         system_info=system_info,
+        monitor_summary=monitor_summary,
+        monitor_history=monitor_history,
+        intelligence=intelligence,
     )
     st.download_button(
         "📥 Download Complete Benchmark Report (PDF)",

@@ -28,23 +28,23 @@ def get_system_info() -> dict[str, Any]:
     """
     Collect hardware and software runtime environment details.
 
-    Returns:
-        dict[str, Any]: System metadata dictionary containing:
-            - 'timestamp': ISO formatted timestamp of the benchmark run.
-            - 'platform': Operating system release and kernel details.
-            - 'machine': Hardware architecture (e.g., 'arm64', 'x86_64').
-            - 'python_version': Active Python runtime version string.
-            - 'cpu_count': Total logical CPU cores reported by the OS.
-            - 'start_method': Multiprocessing start method ('spawn').
+    Integrates detailed cross-platform hardware telemetry including
+    processor brand, physical/logical core counts, and system RAM.
     """
-    return {
-        "timestamp": datetime.now().astimezone().isoformat(),
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "python_version": platform.python_version(),
-        "cpu_count": os.cpu_count() or 1,
-        "start_method": "spawn",
-    }
+    try:
+        from src.monitor import get_detailed_hardware_info
+        return get_detailed_hardware_info()
+    except Exception:
+        return {
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python_version": platform.python_version(),
+            "cpu_count": os.cpu_count() or 1,
+            "physical_cores": os.cpu_count() or 1,
+            "logical_cores": os.cpu_count() or 1,
+            "start_method": "spawn",
+        }
 
 
 def run_benchmark(
@@ -152,12 +152,13 @@ def run_benchmark(
     for workers in unique_workers:
         par_times: list[float] = []
         for r in range(repeats):
-            _, elapsed = process_images_parallel(
+            par_results, elapsed = process_images_parallel(
                 images=images,
                 params=params,
                 num_workers=workers,
             )
             par_times.append(elapsed)
+            last_results = par_results
             steps_done += 1
             if progress_callback is not None:
                 progress_callback(

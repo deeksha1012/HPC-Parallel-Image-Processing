@@ -1,14 +1,14 @@
 """
 HPC Image Processing Lab — Parallel Computing and Performance Analysis Platform.
 
-Main Streamlit application implementing Module 9: Advanced Interactive Frontend.
+Main Streamlit application implementing Module 10: HPC System Monitoring and Performance Intelligence.
 Provides a modern laboratory interface organized into 6 functional tabs:
-1. Overview: Executive summary cards, workload metrics, and workflow guide.
+1. Overview: Executive summary cards, workload metrics, performance intelligence, and workflow guide.
 2. Image Processing: 4-stage gallery, interactive before/after comparison slider, and full-resolution inspection.
-3. Performance Analytics: Scaling charts, speedup curves, and complete metrics tables.
-4. System Monitor: Hardware profiling and Module 10 feature preview.
-5. Benchmark History: Current session archives and Module 10 feature preview.
-6. Reports: PDF benchmark report, CSV table, ZIP archives, and graph exports.
+3. Performance Analytics: Scaling charts, speedup curves, throughput metrics, and worker PID allocation.
+4. System Monitor: Cross-platform hardware profiling, real-time gauges, and resource telemetry charts.
+5. Benchmark History: SQLite experiment archive, filtering, multi-run trends, and CSV export.
+6. Reports: Comprehensive PDF report, CSV metrics table, ZIP archives, and graph exports.
 """
 
 import os
@@ -26,7 +26,10 @@ from src.config import (
     MAX_UPLOAD_IMAGES,
     SUPPORTED_EXTENSIONS,
 )
+from src.history import save_experiment
 from src.image_io import load_image
+from src.intelligence import analyze_performance
+from src.monitor import ResourceMonitor, get_detailed_hardware_info
 from src.sample_generator import (
     RESOLUTION_PRESETS,
     generate_sample_images_in_memory,
@@ -99,13 +102,27 @@ def main() -> None:
     # 3. Sidebar: Application Controls and Configuration
     st.sidebar.markdown("## 🔬 HPC Image Processing Lab")
     st.sidebar.markdown(
-        '<span class="hpc-badge">Module 9: Advanced Frontend</span>',
+        '<span class="hpc-badge">Module 10: System Telemetry & Intelligence</span>',
         unsafe_allow_html=True,
     )
 
     # Reset Experiment Action
-    if st.sidebar.button("🔄 Reset Experiment", use_container_width=True, help="Clear all uploaded images, generated samples, and benchmark data"):
-        for key in ["loaded_images", "benchmark_df", "last_results", "original_images", "params"]:
+    if st.sidebar.button(
+        "🔄 Reset Experiment",
+        use_container_width=True,
+        help="Clear all uploaded images, generated samples, and benchmark data",
+    ):
+        for key in [
+            "loaded_images",
+            "benchmark_df",
+            "last_results",
+            "original_images",
+            "params",
+            "monitor_summary",
+            "monitor_history",
+            "intelligence",
+            "current_exp_id",
+        ]:
             st.session_state.pop(key, None)
         st.session_state["loaded_images"] = []
         st.rerun()
@@ -157,6 +174,9 @@ def main() -> None:
                 st.session_state["loaded_images"] = gen_images
                 st.session_state.pop("benchmark_df", None)
                 st.session_state.pop("last_results", None)
+                st.session_state.pop("monitor_summary", None)
+                st.session_state.pop("monitor_history", None)
+                st.session_state.pop("intelligence", None)
                 st.sidebar.success(f"Generated {len(gen_images)} images ({width}×{height})!")
                 st.rerun()
 
@@ -217,6 +237,23 @@ def main() -> None:
         help="Number of times each configuration is repeated to calculate a stable mean and standard deviation.",
     )
 
+    # HPC Telemetry Controls
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🖥️ HPC Monitoring")
+    enable_monitoring = st.sidebar.checkbox(
+        "Enable Real-Time Monitoring",
+        value=True,
+        help="Sample background CPU and RAM utilization during benchmark runs using psutil.",
+    )
+    sampling_interval = st.sidebar.slider(
+        "Sampling Interval (s):",
+        min_value=0.1,
+        max_value=0.5,
+        value=0.2,
+        step=0.05,
+        help="Polling interval for recording CPU and memory consumption during benchmarking.",
+    )
+
     # Benchmark Execution Trigger
     st.sidebar.markdown("---")
     run_btn = st.sidebar.button(
@@ -258,6 +295,10 @@ def main() -> None:
                 progress_bar.progress(done / total)
                 status_text.caption(f"⚡ **Task Progress:** Step {done} of {total} — {msg}")
 
+            monitor = ResourceMonitor(interval=sampling_interval) if enable_monitoring else None
+            if monitor is not None:
+                monitor.start()
+
             with st.spinner("Running sequential baseline and parallel worker benchmarks..."):
                 try:
                     df, last_results = run_benchmark(
@@ -267,16 +308,41 @@ def main() -> None:
                         repeats=repeats,
                         progress_callback=on_progress,
                     )
-                    # Persist benchmark results in session state
-                    st.session_state["benchmark_df"] = df
-                    st.session_state["last_results"] = last_results
-                    st.session_state["original_images"] = loaded_images
-                    st.session_state["params"] = params
-                    st.session_state["system_info"] = get_system_info()
-                    status_text.empty()
-                    st.success("✅ Benchmark execution completed successfully across all configurations!")
                 except Exception as exc:
                     st.error(f"❌ Benchmark execution failed: {exc}")
+                    df, last_results = None, None
+                finally:
+                    if monitor is not None:
+                        monitor.stop()
+
+            if df is not None and last_results is not None:
+                monitor_summary = monitor.get_summary() if monitor else None
+                monitor_history = monitor.get_history_df() if monitor else pd.DataFrame()
+                sys_info = get_system_info()
+                intel = analyze_performance(df, monitor_summary, sys_info)
+
+                # Persist experiment to SQLite
+                total_pixels = sum(arr.shape[0] * arr.shape[1] for _, arr in loaded_images)
+                total_mp = round(total_pixels / 1_000_000.0, 4)
+                exp_id = save_experiment(
+                    df=df,
+                    params=params,
+                    num_images=len(loaded_images),
+                    total_megapixels=total_mp,
+                    monitor_summary=monitor_summary,
+                )
+
+                st.session_state["benchmark_df"] = df
+                st.session_state["last_results"] = last_results
+                st.session_state["original_images"] = loaded_images
+                st.session_state["params"] = params
+                st.session_state["system_info"] = sys_info
+                st.session_state["monitor_summary"] = monitor_summary
+                st.session_state["monitor_history"] = monitor_history
+                st.session_state["intelligence"] = intel
+                st.session_state["current_exp_id"] = exp_id
+                status_text.empty()
+                st.success("✅ Benchmark execution completed successfully across all configurations!")
 
     # 6. Retrieve active session state data
     df = st.session_state.get("benchmark_df", None)
@@ -287,6 +353,10 @@ def main() -> None:
         {"kernel_size": kernel_size, "sigma": sigma, "repeats": repeats},
     )
     system_info = st.session_state.get("system_info", get_system_info())
+    monitor_summary = st.session_state.get("monitor_summary", None)
+    monitor_history = st.session_state.get("monitor_history", None)
+    intelligence = st.session_state.get("intelligence", None)
+    current_exp_id = st.session_state.get("current_exp_id", None)
 
     # 7. Navigation Tabs
     tab_overview, tab_processing, tab_analytics, tab_monitor, tab_history, tab_reports = st.tabs(
@@ -308,6 +378,8 @@ def main() -> None:
             system_info=system_info,
             params=params,
             selected_workers=worker_counts,
+            intelligence=intelligence,
+            monitor_summary=monitor_summary,
         )
 
     with tab_processing:
@@ -318,13 +390,24 @@ def main() -> None:
         )
 
     with tab_analytics:
-        render_analytics_tab(df=df)
+        render_analytics_tab(
+            df=df,
+            last_results=last_results,
+            intelligence=intelligence,
+        )
 
     with tab_monitor:
-        render_system_monitor_tab(system_info=system_info)
+        render_system_monitor_tab(
+            system_info=system_info,
+            monitor_history=monitor_history,
+            monitor_summary=monitor_summary,
+        )
 
     with tab_history:
-        render_history_tab(df=df)
+        render_history_tab(
+            df=df,
+            current_exp_id=current_exp_id,
+        )
 
     with tab_reports:
         render_reports_tab(
@@ -333,6 +416,9 @@ def main() -> None:
             loaded_images=current_images,
             params=params,
             system_info=system_info,
+            monitor_summary=monitor_summary,
+            monitor_history=monitor_history,
+            intelligence=intelligence,
         )
 
 
