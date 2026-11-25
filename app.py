@@ -3,12 +3,14 @@ Streamlit Web Dashboard for High Performance Image Processing.
 
 Provides an interactive user interface to upload images, configure Gaussian blur
 and core allocation parameters, run sequential and parallel benchmarks, inspect
-execution times and efficiency metrics, and visualize image processing stages.
+execution times and efficiency metrics, visualize image processing stages,
+display performance charts, and export results in various formats.
 """
 
 import os
 from pathlib import Path
 from typing import Any
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -21,7 +23,14 @@ from src.config import (
     MAX_UPLOAD_IMAGES,
     SUPPORTED_EXTENSIONS,
 )
+from src.export import (
+    create_results_zip,
+    dataframe_to_csv_bytes,
+    figure_to_png_bytes,
+    image_to_png_bytes,
+)
 from src.image_io import load_image
+from src.plots import plot_efficiency, plot_execution_time, plot_speedup
 
 
 def load_uploaded_files(uploaded_files: list) -> list[tuple[str, np.ndarray]]:
@@ -69,7 +78,6 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
     col1.metric("Sequential Time", f"{seq_row['mean_time_s']:.3f} s")
 
     if not par_df.empty:
-        # Find the fastest parallel configuration and the highest speedup factor
         fastest_idx = par_df["mean_time_s"].idxmin()
         fastest_row = par_df.loc[fastest_idx]
         max_sp_row = par_df.loc[par_df["speedup"].idxmax()]
@@ -112,7 +120,6 @@ def render_results_table(df: pd.DataFrame) -> None:
         }
     )
 
-    # Format numbers for clean presentation
     display_df["Mean Time (s)"] = display_df["Mean Time (s)"].map(lambda x: f"{x:.3f}")
     display_df["Min Time (s)"] = display_df["Min Time (s)"].map(lambda x: f"{x:.3f}")
     display_df["Std Dev (s)"] = display_df["Std Dev (s)"].map(lambda x: f"{x:.3f}")
@@ -126,15 +133,20 @@ def render_results_table(df: pd.DataFrame) -> None:
 def render_processed_images(
     last_results: list[dict[str, Any]],
     original_images: list[tuple[str, np.ndarray]],
-) -> None:
-    """Display a 4-column visual gallery comparing Original, Grayscale, Blur, and Edges."""
+) -> str:
+    """
+    Display a 4-column visual gallery comparing Original, Grayscale, Blur, and Edges.
+
+    Returns:
+        str: Currently selected image name for targeted downloads.
+    """
     st.subheader("Processed Images Preview")
     orig_dict = {name: arr for name, arr in original_images}
     res_dict = {res["name"]: res for res in last_results}
 
     image_names = list(orig_dict.keys())
     if not image_names:
-        return
+        return ""
 
     selected = st.selectbox("Select an image to inspect", options=image_names)
     if selected and selected in res_dict:
@@ -143,6 +155,155 @@ def render_processed_images(
         c2.image(res_dict[selected]["gray"], caption="2. Grayscale", use_container_width=True)
         c3.image(res_dict[selected]["blur"], caption="3. Gaussian Blur", use_container_width=True)
         c4.image(res_dict[selected]["edges"], caption="4. Sobel Edges", use_container_width=True)
+
+    return selected or ""
+
+
+def render_performance_graphs(df: pd.DataFrame) -> None:
+    """Render performance graphs in tabs with captions and close figures cleanly."""
+    st.subheader("Performance Graphs")
+    tab_time, tab_speedup, tab_eff = st.tabs(["Execution time", "Speedup", "Efficiency"])
+
+    with tab_time:
+        fig_time = plot_execution_time(df)
+        st.pyplot(fig_time)
+        plt.close(fig_time)
+        st.caption(
+            "How to read: Lower bars represent faster total execution time. Error bars show "
+            "the standard deviation across runs, illustrating execution stability."
+        )
+
+    with tab_speedup:
+        fig_speedup = plot_speedup(df)
+        st.pyplot(fig_speedup)
+        plt.close(fig_speedup)
+        st.caption(
+            "How to read: Values above 1.0 indicate acceleration over sequential execution. "
+            "The dashed line represents theoretical ideal linear speedup where performance "
+            "scales proportionally with worker core count."
+        )
+
+    with tab_eff:
+        fig_eff = plot_efficiency(df)
+        st.pyplot(fig_eff)
+        plt.close(fig_eff)
+        st.caption(
+            "How to read: Measures how effectively additional worker cores contribute to speedup. "
+            "The dashed line at 100% shows ideal linear scaling; real efficiency decreases with "
+            "more cores due to inter-process communication and synchronization overhead."
+        )
+
+
+def render_downloads(
+    df: pd.DataFrame,
+    last_results: list[dict[str, Any]],
+    selected_image_name: str,
+) -> None:
+    """Render export and download options for images, archives, tables, and graphs."""
+    st.subheader("Downloads")
+
+    # 1. Download outputs for currently selected image
+    if selected_image_name:
+        res_dict = {res["name"]: res for res in last_results}
+        if selected_image_name in res_dict:
+            res = res_dict[selected_image_name]
+            stem = Path(selected_image_name).stem
+            st.markdown(f"**Download individual outputs for:** `{selected_image_name}`")
+            col_g, col_b, col_e = st.columns(3)
+
+            col_g.download_button(
+                "Download Grayscale (PNG)",
+                data=image_to_png_bytes(res["gray"]),
+                file_name=f"{stem}_gray.png",
+                mime="image/png",
+                key="dl_single_gray",
+            )
+            col_b.download_button(
+                "Download Gaussian Blur (PNG)",
+                data=image_to_png_bytes(res["blur"]),
+                file_name=f"{stem}_blur.png",
+                mime="image/png",
+                key="dl_single_blur",
+            )
+            col_e.download_button(
+                "Download Sobel Edges (PNG)",
+                data=image_to_png_bytes(res["edges"]),
+                file_name=f"{stem}_edges.png",
+                mime="image/png",
+                key="dl_single_edges",
+            )
+
+    st.divider()
+
+    # 2. Batch ZIP download with stage selection
+    st.markdown("**Download all processed images (ZIP Archive)**")
+    zip_stages = st.multiselect(
+        "Select output types to include in ZIP archive:",
+        options=["gray", "blur", "edges"],
+        default=["gray", "blur", "edges"],
+        key="zip_stages_multiselect",
+    )
+    if zip_stages:
+        zip_bytes = create_results_zip(last_results, which=zip_stages)
+        st.download_button(
+            "Download all processed images (ZIP)",
+            data=zip_bytes,
+            file_name="processed_images.zip",
+            mime="application/zip",
+            key="dl_all_images_zip",
+        )
+
+    st.divider()
+
+    # 3. Download results table as CSV
+    st.markdown("**Download benchmark data**")
+    csv_bytes = dataframe_to_csv_bytes(df)
+    st.download_button(
+        "Download results table (CSV)",
+        data=csv_bytes,
+        file_name="benchmark_results.csv",
+        mime="text/csv",
+        key="dl_benchmark_csv",
+    )
+
+    st.divider()
+
+    # 4. Download high-resolution graph PNGs
+    st.markdown("**Download performance graphs (PNG)**")
+    c_g1, c_g2, c_g3 = st.columns(3)
+
+    f_time = plot_execution_time(df)
+    b_time = figure_to_png_bytes(f_time)
+    plt.close(f_time)
+    c_g1.download_button(
+        "Download Execution Time Graph",
+        data=b_time,
+        file_name="execution_time.png",
+        mime="image/png",
+        key="dl_fig_time",
+    )
+
+    f_sp = plot_speedup(df)
+    b_sp = figure_to_png_bytes(f_sp)
+    plt.close(f_sp)
+    c_g2.download_button(
+        "Download Speedup Graph",
+        data=b_sp,
+        file_name="speedup.png",
+        mime="image/png",
+        key="dl_fig_speedup",
+    )
+
+    f_eff = plot_efficiency(df)
+    b_eff = figure_to_png_bytes(f_eff)
+    plt.close(f_eff)
+    c_g3.download_button(
+        "Download Efficiency Graph",
+        data=b_eff,
+        file_name="efficiency.png",
+        mime="image/png",
+        key="dl_fig_efficiency",
+    )
 
 
 def render_system_info(info: dict[str, Any]) -> None:
@@ -251,12 +412,15 @@ def main() -> None:
     # Display results from session state if available
     if "benchmark_df" in st.session_state:
         st.divider()
-        render_summary_metrics(st.session_state["benchmark_df"])
-        render_results_table(st.session_state["benchmark_df"])
-        render_processed_images(
-            st.session_state["last_results"],
-            st.session_state["original_images"],
-        )
+        df = st.session_state["benchmark_df"]
+        last_results = st.session_state["last_results"]
+        orig_images = st.session_state["original_images"]
+
+        render_summary_metrics(df)
+        render_results_table(df)
+        selected_img = render_processed_images(last_results, orig_images)
+        render_performance_graphs(df)
+        render_downloads(df, last_results, selected_img)
         render_system_info(st.session_state["system_info"])
     else:
         st.info(
