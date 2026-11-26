@@ -1,14 +1,15 @@
 """
 HPC Image Processing Lab — Parallel Computing and Performance Analysis Platform.
 
-Main Streamlit application implementing Module 10: HPC System Monitoring and Performance Intelligence.
-Provides a modern laboratory interface organized into 6 functional tabs:
-1. Overview: Executive summary cards, workload metrics, performance intelligence, and workflow guide.
+Main Streamlit application implementing Module 11: Parallel Performance Optimization & Scalability.
+Provides a modern laboratory interface organized into 7 functional tabs:
+1. Overview: Executive summary cards, optimization gains, workload metrics, and performance intelligence.
 2. Image Processing: 4-stage gallery, interactive before/after comparison slider, and full-resolution inspection.
-3. Performance Analytics: Scaling charts, speedup curves, throughput metrics, and worker PID allocation.
-4. System Monitor: Cross-platform hardware profiling, real-time gauges, and resource telemetry charts.
-5. Benchmark History: SQLite experiment archive, filtering, multi-run trends, and CSV export.
-6. Reports: Comprehensive PDF report, CSV metrics table, ZIP archives, and graph exports.
+3. Performance Analytics: 3-way comparative charts (Seq vs. Orig vs. Opt), speedup curves, throughput metrics, and worker allocation.
+4. Scalability & Crossover: Workload sweeps (resolution & image count), crossover threshold detection, and memory limits.
+5. System Monitor: Cross-platform hardware profiling, real-time gauges, and resource telemetry charts.
+6. Benchmark History: SQLite experiment archive, filtering, multi-run trends, and CSV export.
+7. Reports: Comprehensive PDF report (with 3-way comparisons & scalability), CSV metrics table, ZIP archives, and graph exports.
 """
 
 import os
@@ -19,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from src.benchmark import get_system_info, run_benchmark
+from src.benchmark_optimized import run_three_way_benchmark
 from src.config import (
     DEFAULT_KERNEL_SIZE,
     DEFAULT_REPEATS,
@@ -41,6 +43,7 @@ from src.ui.tabs import (
     render_image_processing_tab,
     render_overview_tab,
     render_reports_tab,
+    render_scalability_tab,
     render_system_monitor_tab,
 )
 
@@ -102,7 +105,7 @@ def main() -> None:
     # 3. Sidebar: Application Controls and Configuration
     st.sidebar.markdown("## 🔬 HPC Image Processing Lab")
     st.sidebar.markdown(
-        '<span class="hpc-badge">Module 10: System Telemetry & Intelligence</span>',
+        '<span class="hpc-badge">Module 11: Parallel Optimization & Scalability</span>',
         unsafe_allow_html=True,
     )
 
@@ -237,6 +240,28 @@ def main() -> None:
         help="Number of times each configuration is repeated to calculate a stable mean and standard deviation.",
     )
 
+    # HPC Benchmarking Engine Controls
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🚀 Benchmarking Engine")
+    benchmark_engine = st.sidebar.radio(
+        "Optimization Mode:",
+        options=[
+            "🚀 3-Way Comparative (Seq vs. Orig vs. Opt)",
+            "⚡ Standard (Sequential vs. Parallel)",
+        ],
+        index=0,
+        help="3-Way compares Sequential, Original multiprocessing, and Zero-Copy Shared Memory Optimized Parallel.",
+    )
+    measurement_protocol = st.sidebar.radio(
+        "Measurement Protocol:",
+        options=[
+            "Steady-State (Pre-warmed Workers)",
+            "End-to-End (Process Creation Included)",
+        ],
+        index=0,
+        help="Steady-state measures pure algorithmic throughput without process spawning latency.",
+    )
+
     # HPC Telemetry Controls
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🖥️ HPC Monitoring")
@@ -301,13 +326,28 @@ def main() -> None:
 
             with st.spinner("Running sequential baseline and parallel worker benchmarks..."):
                 try:
-                    df, last_results = run_benchmark(
-                        images=loaded_images,
-                        params=params,
-                        worker_counts=worker_counts,
-                        repeats=repeats,
-                        progress_callback=on_progress,
-                    )
+                    if benchmark_engine.startswith("🚀"):
+                        bench_mode = (
+                            "steady_state"
+                            if "Steady-State" in measurement_protocol
+                            else "end_to_end"
+                        )
+                        df, last_results, _ = run_three_way_benchmark(
+                            images=loaded_images,
+                            params=params,
+                            worker_counts=worker_counts,
+                            repeats=repeats,
+                            mode=bench_mode,
+                            progress_callback=on_progress,
+                        )
+                    else:
+                        df, last_results = run_benchmark(
+                            images=loaded_images,
+                            params=params,
+                            worker_counts=worker_counts,
+                            repeats=repeats,
+                            progress_callback=on_progress,
+                        )
                 except Exception as exc:
                     st.error(f"❌ Benchmark execution failed: {exc}")
                     df, last_results = None, None
@@ -359,11 +399,20 @@ def main() -> None:
     current_exp_id = st.session_state.get("current_exp_id", None)
 
     # 7. Navigation Tabs
-    tab_overview, tab_processing, tab_analytics, tab_monitor, tab_history, tab_reports = st.tabs(
+    (
+        tab_overview,
+        tab_processing,
+        tab_analytics,
+        tab_scalability,
+        tab_monitor,
+        tab_history,
+        tab_reports,
+    ) = st.tabs(
         [
             "📊 Overview",
             "🖼️ Image Processing",
             "⚡ Performance Analytics",
+            "📈 Scalability & Crossover",
             "🖥️ System Monitor",
             "📜 Benchmark History",
             "📑 Reports",
@@ -396,6 +445,13 @@ def main() -> None:
             intelligence=intelligence,
         )
 
+    with tab_scalability:
+        render_scalability_tab(
+            params=params,
+            default_workers=worker_counts,
+            system_info=system_info,
+        )
+
     with tab_monitor:
         render_system_monitor_tab(
             system_info=system_info,
@@ -419,6 +475,7 @@ def main() -> None:
             monitor_summary=monitor_summary,
             monitor_history=monitor_history,
             intelligence=intelligence,
+            scalability_df=st.session_state.get("scalability_df"),
         )
 
 

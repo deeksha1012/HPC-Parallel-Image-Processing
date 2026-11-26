@@ -6,13 +6,23 @@ A High Performance Computing (HPC) research and laboratory platform evaluating s
 The application applies pure-NumPy grayscale conversion, 2-pass separable Gaussian blur filtering, and 3x3 Sobel gradient edge detection across image collections.
 It systematically evaluates wall-clock execution times, speedup factors ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$) through a modern Streamlit laboratory dashboard, command-line interfaces, and automated publication-quality PDF report generation.
 
-Status: All 10 modules complete
+Status: All 11 modules complete (Parallel Performance Optimization & Scalability)
 
 ---
 
 ## Key Features
 
 - **Pure NumPy Filter Pipeline**: Self-contained implementations of ITU-R BT.601 grayscale conversion, 2-pass separable 1D Gaussian blur convolution ($O(2K)$ complexity), and 3x3 Sobel gradient edge detection without external image processing libraries (OpenCV/SciPy).
+- **Parallel Performance Optimization & Scalability (Module 11)**:
+  - **Zero-Copy Shared Memory IPC**: Uses `multiprocessing.shared_memory` to allocate raw byte buffers for input/output images. Worker processes map zero-copy `np.ndarray` views directly over shared memory, completely eliminating high-overhead array pickling/unpickling across IPC pipes.
+  - **Deterministic Shared Memory Scope**: `shared_memory_batch_scope` context manager guarantees rigorous allocation, structured slice offsets, worker detachment, and deterministic unlinking (`shm.unlink()`), preventing memory leaks.
+  - **Pre-warmed Persistent Worker Pool**: `PersistentWorkerPool` eliminates repeated ~150-200ms process startup latency under the macOS `spawn` start method by reusing warm worker interpreters across multiple trials and batch operations.
+  - **Single-Threaded Worker Process Isolation**: Worker initializers enforce `VECLIB_MAXIMUM_THREADS=1`, `OMP_NUM_THREADS=1`, and `OPENBLAS_NUM_THREADS=1`, preventing Apple Accelerate / BLAS thread oversubscription and core thrashing.
+  - **3-Way Comparative Benchmarking Engine**: Empirically contrasts Sequential, Original Parallel, and Optimized Parallel pipelines side-by-side in both Steady-State (algorithmic compute) and End-to-End (lifecycle inclusive) modes.
+  - **Workload Scalability & Crossover Suite**: Automated parameter sweep varying image counts (2 to 64) and resolutions (512, 1024, 2048) to empirically detect the exact **parallel crossover point** where multi-core scaling overtakes sequential execution.
+  - **RAM Safety Headroom Estimator**: Pre-calculates peak batch memory consumption against physical and available RAM before running large workloads to prevent OS paging or out-of-memory terminations.
+  - **Dedicated Scalability UI Tab**: Integrated 4th tab with interactive resolution sweeps, worker selectors, crossover curves, and live progress indicators.
+  - **3-Way Visualization & Report Integration**: Custom scaling plots, throughput graphs, and crossover charts embedded into the automated ReportLab PDF report.
 - **Data-Parallel Multiprocessing**: Scalable batch execution leveraging Python's standard `multiprocessing` library using the macOS-safe `spawn` process start method.
 - **Fair Benchmarking Protocol**: Features an untimed sequential warm-up pass, multi-trial repetition, and end-to-end wall-clock timing that accounts for process creation latency and inter-process communication (IPC) serialization overhead.
 - **HPC Metric Evaluation**: Automated measurement of execution time, parallel speedup ($S_p = T_1 / T_p$), and parallel efficiency ($E_p = S_p / p$).
@@ -59,7 +69,7 @@ HPC-Parallel-Image-Processing/
 ├── .gitignore                      # Git exclusion rules for caches, venvs, PDFs, and generated outputs
 ├── AI_USAGE.md                     # Disclosure of AI assistance and student verification log
 ├── README.md                       # Comprehensive project documentation
-├── app.py                          # Streamlit web dashboard with 6 navigation tabs
+├── app.py                          # Streamlit web dashboard with 7 navigation tabs
 ├── pytest.ini                      # Pytest test discovery and path configuration
 ├── requirements.txt                # Package dependencies with lower bounds
 ├── docs/
@@ -78,6 +88,7 @@ HPC-Parallel-Image-Processing/
 ├── src/
 │   ├── __init__.py                 # Package marker for src
 │   ├── benchmark.py                # Automated benchmarking engine and CLI
+│   ├── benchmark_optimized.py      # 3-way comparative benchmark engine (Module 11)
 │   ├── config.py                   # Central paths, constants, and default parameters
 │   ├── export.py                   # In-memory byte serialization (PNG, CSV, ZIP)
 │   ├── filters.py                  # Pure-NumPy grayscale, Gaussian blur, and Sobel filters
@@ -87,15 +98,18 @@ HPC-Parallel-Image-Processing/
 │   ├── metrics.py                  # Speedup and efficiency calculation functions
 │   ├── monitor.py                  # Hardware auto-detection & background resource sampler (Module 10)
 │   ├── parallel.py                 # Data-parallel batch processor using worker pools
+│   ├── parallel_optimized.py       # Zero-copy shared memory & persistent worker pools (Module 11)
 │   ├── pdf_report.py               # Automated A4 PDF benchmark report generator (Modules 8 & 10)
 │   ├── pipeline.py                 # Picklable single-image transformation pipeline
 │   ├── plots.py                    # Matplotlib chart generators and export CLI
+│   ├── plots_optimized.py          # 3-way comparative & crossover Matplotlib charts (Module 11)
 │   ├── sample_generator.py         # In-memory sample image generator with presets (Module 9)
+│   ├── scalability.py              # Scalability testing suite & crossover detector (Module 11)
 │   ├── sequential.py               # Single-core baseline batch processor and CLI
 │   └── ui/
 │       ├── __init__.py             # Package marker for ui module
 │       ├── components.py           # Custom CSS styling, metric cards, and comparison slider
-│       └── tabs.py                 # Modular tab renderers for the 6 application sections
+│       └── tabs.py                 # Modular tab renderers for the 7 application sections
 └── tests/
     ├── __init__.py                 # Package marker for tests
     ├── conftest.py                 # Shared pytest fixtures (synthetic images, real benchmark data)
@@ -104,6 +118,7 @@ HPC-Parallel-Image-Processing/
     ├── test_filters.py             # Filter mathematical correctness and boundary tests
     ├── test_metrics.py             # Speedup and efficiency formula unit tests
     ├── test_monitoring_and_history.py # Telemetry, intelligence, and SQLite tests (Module 10)
+    ├── test_optimization_and_scalability.py # Zero-copy SHM, 3-way benchmark & scalability tests (Module 11)
     ├── test_pdf_report.py          # PDF generation, layout, and analysis tests (Module 8)
     ├── test_pipeline.py            # Single-image pipeline and parallel consistency tests
     ├── test_smoke.py               # Initial setup and configuration smoke test

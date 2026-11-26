@@ -1,15 +1,17 @@
 """
 Modular Streamlit tab renderers for the HPC Image Processing Lab.
 
-Organizes the application interface into 6 dedicated, clean views:
+Organizes the application interface into 7 dedicated, clean views:
 1. Overview: Executive summary cards, workload guide, and performance intelligence highlights.
 2. Image Processing: 4-stage gallery, interactive before/after comparison slider, and full-resolution inspection.
-3. Performance Analytics: Scaling charts, speedup curves, throughput metrics, worker PID distribution, and intelligence recommendations.
-4. System Monitor: Cross-platform hardware profiling, real-time CPU/RAM gauges, post-benchmark telemetry charts, and architectural insights.
-5. Benchmark History: SQLite persistent experiment archive, filtering, multi-run trend charts, experiment inspection, and CSV export.
-6. Reports: Export center for comprehensive PDF report, CSV data, ZIP image archive, and Matplotlib graphs.
+3. Performance Analytics: 3-way comparative scaling charts, speedup curves, throughput metrics, worker PID distribution, and intelligence recommendations.
+4. Scalability & Crossover: Workload scalability testing suite, memory safety estimator, and parallel performance crossover detection.
+5. System Monitor: Cross-platform hardware profiling, real-time CPU/RAM gauges, post-benchmark telemetry charts, and architectural insights.
+6. Benchmark History: SQLite persistent experiment archive, filtering, multi-run trend charts, experiment inspection, and CSV export.
+7. Reports: Export center for comprehensive PDF report, CSV data, ZIP image archive, and Matplotlib graphs.
 """
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
@@ -40,6 +42,18 @@ from src.monitor import (
 )
 from src.pdf_report import generate_benchmark_pdf
 from src.plots import plot_efficiency, plot_execution_time, plot_speedup
+from src.plots_optimized import (
+    plot_efficiency_comparison,
+    plot_scalability_crossover,
+    plot_speedup_comparison,
+    plot_three_way_execution_time,
+    plot_throughput_comparison,
+)
+from src.scalability import (
+    estimate_memory_requirements,
+    find_crossover_point,
+    run_scalability_experiment,
+)
 from src.ui.components import (
     format_bytes_size,
     render_comparison_slider,
@@ -75,7 +89,8 @@ def render_overview_tab(
     if df is not None and not df.empty:
         seq_row = df[df["mode"] == "Sequential"].iloc[0]
         seq_time = float(seq_row["mean_time_s"])
-        par_df = df[df["mode"] == "Parallel"]
+        par_modes = ["Parallel", "Optimized Parallel", "Original Parallel"]
+        par_df = df[df["mode"].isin(par_modes)]
 
         # Fastest overall run across all modes
         fastest_overall_idx = df["mean_time_s"].idxmin()
@@ -86,7 +101,7 @@ def render_overview_tab(
         if not par_df.empty:
             max_sp_row = par_df.loc[par_df["speedup"].idxmax()]
             best_speedup_str = f"{float(max_sp_row['speedup']):.2f}x"
-            best_speedup_sub = f"{int(max_sp_row['workers'])} workers"
+            best_speedup_sub = f"{int(max_sp_row['workers'])} workers ({max_sp_row['mode']})"
 
             fastest_par_row = par_df.loc[par_df["mean_time_s"].idxmin()]
             best_config_str = f"{int(fastest_par_row['workers'])} Workers"
@@ -96,6 +111,17 @@ def render_overview_tab(
             best_speedup_sub = "Sequential only"
             best_config_str = "Sequential"
             best_config_sub = f"{seq_time:.3f} s"
+
+        # Check optimization gain
+        has_opt = "Optimized Parallel" in df["mode"].values
+        if has_opt:
+            opt_rows = df[df["mode"] == "Optimized Parallel"]
+            max_gain = float(opt_rows["optimization_gain"].max()) if not opt_rows.empty else 1.0
+            gain_label = f"{max_gain:.2f}x Gain"
+            gain_sub = "Optimized vs. Original Parallel"
+        else:
+            gain_label = "Standard"
+            gain_sub = "No optimizations enabled"
     else:
         fastest_time_str = "Pending run"
         fastest_mode_str = "Execute benchmark"
@@ -103,6 +129,8 @@ def render_overview_tab(
         best_speedup_sub = "Execute benchmark"
         best_config_str = "Pending run"
         best_config_sub = "Execute benchmark"
+        gain_label = "Pending run"
+        gain_sub = "Execute benchmark"
 
     # 2. Summary cards (2 rows of clean metric cards)
     c1, c2, c3, c4 = st.columns(4)
@@ -122,7 +150,7 @@ def render_overview_tab(
     with c6:
         render_metric_card("Peak Speedup", best_speedup_str, best_speedup_sub, icon="🚀")
     with c7:
-        render_metric_card("Best Configuration", best_config_str, best_config_sub, icon="🏆")
+        render_metric_card("Optimization Gain", gain_label, gain_sub, icon="🏆")
     with c8:
         if monitor_summary:
             avg_cpu = monitor_summary.get("avg_cpu_percent", 0.0)
@@ -140,14 +168,14 @@ def render_overview_tab(
             f"""
             <div class="hpc-callout-success">
                 <b>Benchmark Active:</b> Completed execution across <b>{len(df)} configurations</b>.
-                Explore the <b>Image Processing</b> tab for filter comparisons, <b>Performance Analytics</b> for speedup curves & worker distribution,
-                <b>System Monitor</b> for live/telemetry profiles, or <b>Reports</b> to download the publication-quality PDF report.
+                Explore the <b>Performance Analytics</b> tab for 3-way comparative scaling curves,
+                <b>Scalability & Crossover</b> to detect parallel acceleration thresholds,
+                or <b>Reports</b> to download the publication-quality PDF report.
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Performance Intelligence Callout Banner on Overview
         if intelligence and intelligence.get("key_takeaways"):
             with st.expander("💡 Performance Intelligence Summary & Key Findings", expanded=True):
                 st.markdown(f"**Recommended Configuration:** {intelligence.get('recommendation_reason', '')}")
@@ -158,8 +186,8 @@ def render_overview_tab(
         st.markdown(
             """
             <div class="hpc-callout-info">
-                <b>Images Loaded & Ready:</b> Configure filter parameters (kernel size, sigma) and worker counts in the sidebar,
-                then click <b>▶️ Run Benchmark</b> to start sequential and parallel processing.
+                <b>Images Loaded & Ready:</b> Configure filter parameters and worker counts in the sidebar,
+                then click <b>▶️ Run Benchmark</b> to evaluate Sequential, Original Parallel, and Optimized Parallel pipelines.
             </div>
             """,
             unsafe_allow_html=True,
@@ -181,14 +209,15 @@ def render_overview_tab(
             """
             1. **Sequential Baseline ($T_1$)**: Evaluates a pure-NumPy pipeline (Grayscale $\\to$ Gaussian Blur $\\to$ Sobel Edges)
                executed on a single core after an untimed warm-up pass.
-            2. **Data-Parallel Processing ($T_p$)**: Distributes independent images across a pool of worker processes
-               using Python's `multiprocessing` library under the macOS-safe `spawn` context.
-            3. **Speedup ($S_p$) & Efficiency ($E_p$)**:
+            2. **Original Parallel Multiprocessing**: Standard Python `multiprocessing.Pool` with `spawn` start method,
+               where input and output NumPy arrays are serialized (pickled) across OS pipes.
+            3. **Optimized Parallel Multiprocessing**: High-performance pipeline leveraging POSIX `multiprocessing.shared_memory`
+               for zero-copy array transfers, reusable persistent worker pools, single-threaded BLAS to prevent CPU oversubscription,
+               and adaptive chunking.
+            4. **Speedup ($S_p$) & Efficiency ($E_p$)**:
                $$\\text{Speedup } S_p = \\frac{T_1}{T_p}, \\quad \\text{Efficiency } E_p = \\frac{S_p}{p}$$
-            4. **Throughput Metrics**:
-               $$\\text{Throughput}_{\\text{images}} = \\frac{N}{T_p} \\quad (\\text{images/s}), \\quad \\text{Throughput}_{\\text{MP}} = \\frac{\\text{MP}}{T_p} \\quad (\\text{MP/s})$$
-            5. **Amdahl's Law & IPC Friction**: For small image sets, inter-process pickling and process creation
-               can exceed computational savings, yielding speedup below 1.0. Larger workloads amortize this overhead.
+            5. **Parallel Crossover Threshold**: The workload size where multi-core computational throughput overtakes
+               the fixed latency of process management and inter-process communication.
             """
         )
 
@@ -355,23 +384,24 @@ def render_analytics_tab(
     last_results: Optional[List[Dict[str, Any]]] = None,
     intelligence: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Render the Performance Analytics tab with scaling charts, throughput metrics, worker PID distribution, and intelligence."""
+    """Render the Performance Analytics tab with 3-way comparative charts, throughput metrics, and worker PID distribution."""
     st.markdown("### ⚡ HPC Scaling & Performance Analytics")
 
     if df is None or df.empty:
         st.info("👈 Run the benchmark from the sidebar to generate execution time curves, speedup charts, and efficiency plots.")
         return
 
-    seq_row = df[df["mode"] == "Sequential"].iloc[0]
-    seq_time = float(seq_row["mean_time_s"])
-    par_df = df[df["mode"] == "Parallel"]
+    has_opt = "Optimized Parallel" in df["mode"].values
 
     # Highlights separating fastest overall from best parallel configuration
     st.markdown("#### 🏆 Performance Highlights")
     fastest_overall_idx = df["mean_time_s"].idxmin()
     fastest_overall_row = df.loc[fastest_overall_idx]
 
-    h_col1, h_col2 = st.columns(2)
+    par_modes = ["Parallel", "Optimized Parallel", "Original Parallel"]
+    par_df = df[df["mode"].isin(par_modes)]
+
+    h_col1, h_col2, h_col3 = st.columns(3)
     with h_col1:
         st.markdown(
             f"""
@@ -390,9 +420,9 @@ def render_analytics_tab(
             st.markdown(
                 f"""
                 <div class="hpc-card" style="border-left: 4px solid #10b981;">
-                    <div class="hpc-card-title">🚀 Best Parallel Configuration</div>
+                    <div class="hpc-card-title">🚀 Peak Measured Speedup</div>
                     <div class="hpc-card-value">{float(best_sp_row['speedup']):.2f}x Speedup</div>
-                    <div class="hpc-card-subvalue"><b>Workers:</b> {int(best_sp_row['workers'])} cores | <b>Efficiency:</b> {float(best_sp_row['efficiency']) * 100:.1f}%</div>
+                    <div class="hpc-card-subvalue"><b>Mode:</b> {best_sp_row['mode']} ({int(best_sp_row['workers'])}w) | <b>Eff:</b> {float(best_sp_row['efficiency']) * 100:.1f}%</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -401,9 +431,35 @@ def render_analytics_tab(
             st.markdown(
                 """
                 <div class="hpc-card">
-                    <div class="hpc-card-title">🚀 Best Parallel Configuration</div>
-                    <div class="hpc-card-value">N/A</div>
-                    <div class="hpc-card-subvalue">No parallel worker counts tested</div>
+                    <div class="hpc-card-title">🚀 Peak Measured Speedup</div>
+                    <div class="hpc-card-value">1.00x</div>
+                    <div class="hpc-card-subvalue">Sequential only</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    with h_col3:
+        if has_opt:
+            opt_df = df[df["mode"] == "Optimized Parallel"]
+            max_gain = float(opt_df["optimization_gain"].max()) if not opt_df.empty else 1.0
+            st.markdown(
+                f"""
+                <div class="hpc-card" style="border-left: 4px solid #8b5cf6;">
+                    <div class="hpc-card-title">⚡ Peak Optimization Gain</div>
+                    <div class="hpc-card-value">{max_gain:.2f}x Faster</div>
+                    <div class="hpc-card-subvalue">SharedMemory vs. Original Parallel</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
+                <div class="hpc-card">
+                    <div class="hpc-card-title">⚡ Benchmark Protocol</div>
+                    <div class="hpc-card-value">Standard Mode</div>
+                    <div class="hpc-card-subvalue">Run 3-Way Benchmark for comparisons</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -425,73 +481,90 @@ def render_analytics_tab(
 
     # Performance Charts
     st.markdown("#### 📈 Scaling Visualizations")
-    tab_time, tab_speedup, tab_eff = st.tabs(["Execution Time", "Speedup Curve", "Parallel Efficiency"])
-
-    with tab_time:
-        fig_time = plot_execution_time(df)
-        st.pyplot(fig_time)
-        plt.close(fig_time)
-        st.caption(
-            "**Execution Time Analysis:** Compares mean execution duration across sequential baseline and parallel core counts. "
-            "Error bars represent standard deviation across repeated runs, quantifying stability."
+    if has_opt:
+        tab_time, tab_speedup, tab_eff, tab_tp = st.tabs(
+            [
+                "3-Way Execution Time",
+                "Speedup Curves",
+                "Parallel Efficiency",
+                "Pipeline Throughput",
+            ]
         )
 
-    with tab_speedup:
-        fig_speedup = plot_speedup(df)
-        st.pyplot(fig_speedup)
-        plt.close(fig_speedup)
-        st.caption(
-            "**Speedup Analysis ($S_p = T_1 / T_p$):** Values above 1.0 indicate acceleration over sequential execution. "
-            "The dashed line represents theoretical ideal linear speedup where performance scales proportionally with worker cores."
-        )
+        with tab_time:
+            fig_time = plot_three_way_execution_time(df)
+            st.pyplot(fig_time)
+            plt.close(fig_time)
+            st.caption(
+                "**3-Way Execution Time Comparison:** Contrasts single-core Sequential baseline against Original Multiprocessing "
+                "(array pickling over pipes) and Optimized Multiprocessing (POSIX SharedMemory zero-copy)."
+            )
 
-    with tab_eff:
-        fig_eff = plot_efficiency(df)
-        st.pyplot(fig_eff)
-        plt.close(fig_eff)
-        st.caption(
-            "**Parallel Efficiency Analysis ($E_p = S_p / p$):** Measures the percentage of core compute power effectively utilized. "
-            "The 100% line represents ideal scaling. The downward slope illustrates increasing IPC serialization and scheduling overhead."
-        )
+        with tab_speedup:
+            fig_speedup = plot_speedup_comparison(df)
+            st.pyplot(fig_speedup)
+            plt.close(fig_speedup)
+            st.caption(
+                "**Parallel Speedup Curves:** Compares empirical speedup against ideal theoretical linear scaling (S = p). "
+                "Points above 1.0 indicate wall-clock acceleration over sequential execution."
+            )
+
+        with tab_eff:
+            fig_eff = plot_efficiency_comparison(df)
+            st.pyplot(fig_eff)
+            plt.close(fig_eff)
+            st.caption(
+                "**Parallel Core Efficiency:** Measures compute utilization percentage per worker core ($E_p = S_p / p$). "
+                "Dashed 100% line represents ideal scaling."
+            )
+
+        with tab_tp:
+            fig_tp = plot_throughput_comparison(df)
+            st.pyplot(fig_tp)
+            plt.close(fig_tp)
+            st.caption(
+                "**Pipeline Throughput:** Demonstrates processing capacity in Images per second and Megapixels per second."
+            )
+
+    else:
+        tab_time, tab_speedup, tab_eff = st.tabs(["Execution Time", "Speedup Curve", "Parallel Efficiency"])
+
+        with tab_time:
+            fig_time = plot_execution_time(df)
+            st.pyplot(fig_time)
+            plt.close(fig_time)
+
+        with tab_speedup:
+            fig_speedup = plot_speedup(df)
+            st.pyplot(fig_speedup)
+            plt.close(fig_speedup)
+
+        with tab_eff:
+            fig_eff = plot_efficiency(df)
+            st.pyplot(fig_eff)
+            plt.close(fig_eff)
 
     st.markdown("---")
 
-    # HPC Throughput & Variability Table
-    st.markdown("#### 🚀 HPC Throughput & Runtime Variability")
-    st.write(
-        "Throughput quantifies work completed per unit time. Coefficient of Variation ($CV = \\sigma / \\mu \\times 100\\%$) "
-        "measures runtime stability across repeated trials."
-    )
-    df_aug = compute_throughput_metrics(df)
-    tp_display = df_aug[
-        [
-            "mode",
-            "workers",
-            "mean_time_s",
-            "throughput_images_per_s",
-            "throughput_mp_per_s",
-            "cv_percent",
-            "ideal_speedup",
-            "speedup_deficit",
-        ]
-    ].copy()
-    tp_display.columns = [
-        "Mode",
-        "Workers",
-        "Mean Time (s)",
-        "Throughput (Images/s)",
-        "Throughput (MP/s)",
-        "Variability (CV %)",
-        "Ideal Speedup",
-        "Speedup Deficit",
-    ]
-    tp_display["Mean Time (s)"] = tp_display["Mean Time (s)"].map(lambda x: f"{x:.3f}")
-    tp_display["Throughput (Images/s)"] = tp_display["Throughput (Images/s)"].map(lambda x: f"{x:.2f}")
-    tp_display["Throughput (MP/s)"] = tp_display["Throughput (MP/s)"].map(lambda x: f"{x:.2f}")
-    tp_display["Variability (CV %)"] = tp_display["Variability (CV %)"].map(lambda x: f"{x:.2f}%")
-    tp_display["Ideal Speedup"] = tp_display["Ideal Speedup"].map(lambda x: f"{x:.1f}x")
-    tp_display["Speedup Deficit"] = tp_display["Speedup Deficit"].map(lambda x: f"{x:.2f}x")
-    st.dataframe(tp_display, use_container_width=True)
+    # Complete Metrics Table
+    st.markdown("#### 📋 Complete Benchmark Metrics Table")
+    display_df = df.copy()
+
+    # Format numbers for clean presentation
+    display_df["mean_time_s"] = display_df["mean_time_s"].map(lambda x: f"{float(x):.3f}s")
+    display_df["min_time_s"] = display_df["min_time_s"].map(lambda x: f"{float(x):.3f}s")
+    display_df["std_time_s"] = display_df["std_time_s"].map(lambda x: f"{float(x):.3f}s")
+    display_df["speedup"] = display_df["speedup"].map(lambda x: f"{float(x):.2f}x")
+    display_df["efficiency"] = display_df["efficiency"].map(lambda x: f"{float(x) * 100:.1f}%")
+
+    if "throughput_images_s" in display_df.columns:
+        display_df["throughput_images_s"] = display_df["throughput_images_s"].map(lambda x: f"{float(x):.1f}")
+    if "throughput_mp_s" in display_df.columns:
+        display_df["throughput_mp_s"] = display_df["throughput_mp_s"].map(lambda x: f"{float(x):.2f}")
+    if "optimization_gain" in display_df.columns:
+        display_df["optimization_gain"] = display_df["optimization_gain"].map(lambda x: f"{float(x):.2f}x")
+
+    st.dataframe(display_df, use_container_width=True)
 
     st.markdown("---")
 
@@ -524,34 +597,161 @@ def render_analytics_tab(
                 w_disp["Task Share (%)"] = w_disp["Task Share (%)"].map(lambda x: f"{x:.1f}%")
                 st.dataframe(w_disp, use_container_width=True)
 
-    st.markdown("---")
 
-    # Complete Metrics Table
-    st.markdown("#### 📋 Complete Benchmark Metrics Table")
-    display_df = df.copy()
-    display_df = display_df.rename(
-        columns={
-            "mode": "Mode",
-            "workers": "Workers",
-            "runs": "Runs",
-            "mean_time_s": "Mean Time (s)",
-            "min_time_s": "Min Time (s)",
-            "std_time_s": "Std Dev (s)",
-            "speedup": "Speedup",
-            "efficiency": "Efficiency",
-            "num_images": "Images",
-            "total_megapixels": "Megapixels",
-            "run_times_s": "Individual Runs (s)",
-        }
+def render_scalability_tab(
+    params: Optional[Dict[str, Any]] = None,
+    default_workers: Optional[List[int]] = None,
+    system_info: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Render the Workload Scalability & Parallel Crossover Analysis tab."""
+    if params is None:
+        params = {"kernel_size": 5, "sigma": 1.0, "repeats": 1}
+    st.markdown("### 📈 Workload Scalability & Parallel Crossover Analysis")
+    st.write(
+        "Evaluate how parallel speedup scales with increasing workload size (image counts and resolutions), "
+        "and empirically identify the **parallel crossover threshold** where multi-core execution overtakes sequential processing."
     )
 
-    display_df["Mean Time (s)"] = display_df["Mean Time (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Min Time (s)"] = display_df["Min Time (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Std Dev (s)"] = display_df["Std Dev (s)"].map(lambda x: f"{x:.3f}")
-    display_df["Speedup"] = display_df["Speedup"].map(lambda x: f"{x:.2f}x")
-    display_df["Efficiency"] = display_df["Efficiency"].map(lambda x: f"{x * 100:.1f}%")
+    # 1. Configuration Panel
+    col_sc1, col_sc2 = st.columns(2)
+    with col_sc1:
+        res_choice = st.selectbox(
+            "Test Resolution:",
+            options=["512 × 512 px (Fast)", "1024 × 1024 px (Standard)", "2048 × 2048 px (HD Intensive)"],
+            index=1,
+            key="scalability_res_choice",
+        )
+        if "512" in res_choice:
+            width, height = 512, 512
+        elif "1024" in res_choice:
+            width, height = 1024, 1024
+        else:
+            width, height = 2048, 2048
 
-    st.dataframe(display_df, use_container_width=True)
+        workers_to_test = st.selectbox(
+            "Parallel Worker Process Count:",
+            options=[w for w in [2, 4, 6, 8, 10] if w <= (os.cpu_count() or 1)],
+            index=1,
+            key="scalability_workers_choice",
+        )
+
+    with col_sc2:
+        image_counts_choice = st.multiselect(
+            "Workload Image Counts to Sweep:",
+            options=[4, 8, 12, 16, 24, 32, 48, 64],
+            default=[4, 8, 16, 24],
+            key="scalability_counts_choice",
+        )
+        sc_mode = st.radio(
+            "Measurement Protocol:",
+            options=["Steady-State (Pre-warmed Workers)", "End-to-End (Process Creation Included)"],
+            index=0,
+            horizontal=True,
+            key="scalability_mode_choice",
+        )
+        sc_benchmark_mode = "steady_state" if "Steady-State" in sc_mode else "end_to_end"
+
+    # 2. Automated Memory Safety Estimation
+    if image_counts_choice:
+        max_c = max(image_counts_choice)
+        mem_est = estimate_memory_requirements(max_c, width, height, workers_to_test)
+
+        st.markdown(
+            f"""
+            <div style="margin: 0.5rem 0 1rem 0;">
+                <span class="hpc-meta-pill">💾 <b>Peak RAM Required:</b> ~{mem_est['estimated_peak_mb']:.0f} MB</span>
+                <span class="hpc-meta-pill">🟢 <b>Available RAM:</b> {mem_est['available_mb']:.0f} MB</span>
+                <span class="hpc-meta-pill">🛡️ <b>Safety Status:</b> {'✅ Safe Headroom' if mem_est['is_safe'] else '⚠️ High Memory Warning'}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if mem_est["warning_message"]:
+            st.warning(mem_est["warning_message"])
+
+    # 3. Execution Trigger
+    run_sc_btn = st.button("▶️ Run Scalability Sweep & Detect Crossover", type="primary", use_container_width=True)
+
+    if run_sc_btn:
+        if not image_counts_choice:
+            st.warning("Please select at least one image count to sweep.")
+        else:
+            sorted_counts = sorted(image_counts_choice)
+            workload_configs = [
+                {
+                    "label": f"{cnt} imgs ({width}x{height})",
+                    "count": cnt,
+                    "width": width,
+                    "height": height,
+                }
+                for cnt in sorted_counts
+            ]
+
+            p_bar = st.progress(0, text="Starting scalability experiment sweep...")
+            status_txt = st.empty()
+
+            def on_sc_progress(done: int, total: int, msg: str) -> None:
+                p_bar.progress(done / total)
+                status_txt.caption(f"⚡ Step {done}/{total}: {msg}")
+
+            with st.spinner("Running scalability sweep across workload configurations..."):
+                try:
+                    sc_df, crossover_info = run_scalability_experiment(
+                        workload_configs=workload_configs,
+                        params=params,
+                        num_workers=workers_to_test,
+                        benchmark_mode=sc_benchmark_mode,
+                        progress_callback=on_sc_progress,
+                    )
+                    st.session_state["scalability_df"] = sc_df
+                    st.session_state["crossover_info"] = crossover_info
+                    status_txt.empty()
+                    st.success("✅ Scalability sweep completed successfully!")
+                except Exception as exc:
+                    st.error(f"❌ Scalability experiment failed: {exc}")
+
+    # 4. Results Display
+    saved_sc_df = st.session_state.get("scalability_df")
+    saved_crossover = st.session_state.get("crossover_info")
+
+    if saved_sc_df is not None and not saved_sc_df.empty:
+        st.markdown("---")
+        st.markdown("#### 📊 Scalability Results & Crossover Findings")
+
+        if saved_crossover:
+            if saved_crossover.get("crossover_observed"):
+                st.markdown(
+                    f"""
+                    <div class="hpc-callout-success">
+                        <div style="font-weight: 700; font-size: 1.05rem; margin-bottom: 0.35rem;">
+                            🎯 Parallel Performance Crossover Observed!
+                        </div>
+                        <div>{saved_crossover.get('analysis_text', '')}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f"""
+                    <div class="hpc-callout-info">
+                        <div style="font-weight: 700; font-size: 1.05rem; margin-bottom: 0.35rem;">
+                            ℹ️ Parallel Crossover Analysis
+                        </div>
+                        <div>{saved_crossover.get('analysis_text', '')}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        # Plot Crossover Curve
+        fig_cross = plot_scalability_crossover(saved_sc_df)
+        st.pyplot(fig_cross)
+        plt.close(fig_cross)
+
+        # Scalability Data Table
+        st.markdown("#### 📋 Scalability Sweep Metrics Table")
+        st.dataframe(saved_sc_df, use_container_width=True)
 
 
 def render_system_monitor_tab(
@@ -612,7 +812,6 @@ def render_system_monitor_tab(
     # 3. Post-Benchmark Monitoring Telemetry Timelines
     st.markdown("#### 📊 Monitored Benchmark Resource Telemetry")
     if monitor_history is not None and not monitor_history.empty and len(monitor_history) > 1:
-        # Telemetry summary cards
         if monitor_summary:
             t1, t2, t3, t4 = st.columns(4)
             with t1:
@@ -632,17 +831,11 @@ def render_system_monitor_tab(
             fig_cpu = plot_cpu_utilization(monitor_history)
             st.pyplot(fig_cpu)
             plt.close(fig_cpu)
-            st.caption(
-                "Shows system-wide CPU utilization alongside individual execution cores over the duration of the benchmark."
-            )
 
         with tab_mem_plot:
             fig_mem = plot_memory_utilization(monitor_history)
             st.pyplot(fig_mem)
             plt.close(fig_mem)
-            st.caption(
-                "Tracks resident set memory footprint and RAM percentage over time."
-            )
     else:
         st.info("👈 Run a benchmark from the sidebar with **Enable Real-Time Monitoring** checked to view telemetry charts.")
 
@@ -675,7 +868,7 @@ def render_system_monitor_tab(
                 <div style="font-size: 0.9rem; line-height: 1.4; opacity: 0.9;">
                     Under the <code>spawn</code> method, each worker is an independent Python interpreter process.
                     Passing raw image buffers requires serializing (pickling) NumPy arrays across OS pipes,
-                    consuming CPU memory bandwidth before filtering computation begins.
+                    consuming CPU memory bandwidth. <b>Module 11 SharedMemory</b> eliminates this serialization bottleneck completely.
                 </div>
             </div>
             """,
@@ -696,7 +889,6 @@ def render_history_tab(
 
     history_df = get_all_experiments()
 
-    # History Summary Cards
     h1, h2, h3, h4 = st.columns(4)
     with h1:
         render_metric_card("Total Experiments", f"{len(history_df)}", "Logged in SQLite", icon="🗄️")
@@ -723,7 +915,7 @@ def render_history_tab(
         max_workload = float(history_df["total_megapixels"].max()) if not history_df.empty else 1.0
         min_mp = st.slider("Minimum Workload (Megapixels):", min_value=0.0, max_value=max(1.0, max_workload), value=0.0, step=0.1)
     with f_c2:
-        mode_filter = st.selectbox("Fastest Mode:", options=["All", "Parallel", "Sequential"])
+        mode_filter = st.selectbox("Fastest Mode:", options=["All", "Optimized Parallel", "Parallel", "Sequential"])
 
     filtered_df = history_df[history_df["total_megapixels"] >= min_mp]
     if mode_filter != "All":
@@ -810,6 +1002,7 @@ def render_reports_tab(
     monitor_summary: Optional[Dict[str, Any]] = None,
     monitor_history: Optional[pd.DataFrame] = None,
     intelligence: Optional[Dict[str, Any]] = None,
+    scalability_df: Optional[pd.DataFrame] = None,
 ) -> None:
     """Render the Reports tab with organized downloads for PDF, CSV, ZIP, charts, and images."""
     st.markdown("### 📑 Reports & Data Export Center")
@@ -822,9 +1015,9 @@ def render_reports_tab(
     st.markdown("#### 📄 Complete Benchmark Report (PDF)")
     st.write(
         "Generate a publication-quality, A4-formatted PDF report containing executive summaries, "
-        "hardware specifications, experiment configuration, complete tabular metrics, throughput tables, "
-        "worker PID distributions, scaling graphs, real-time telemetry timelines, automated performance intelligence, "
-        "and the full 4-stage processed image gallery for all uploaded images."
+        "hardware specifications, experiment configuration, 3-way comparative tabular metrics, throughput tables, "
+        "worker PID distributions, scaling graphs, real-time telemetry timelines, workload crossover analysis, "
+        "automated performance intelligence, and the full 4-stage processed image gallery for all uploaded images."
     )
 
     pdf_bytes = generate_benchmark_pdf(
@@ -836,6 +1029,7 @@ def render_reports_tab(
         monitor_summary=monitor_summary,
         monitor_history=monitor_history,
         intelligence=intelligence,
+        scalability_df=scalability_df,
     )
     st.download_button(
         "📥 Download Complete Benchmark Report (PDF)",
@@ -888,7 +1082,16 @@ def render_reports_tab(
     st.write("Export publication-ready Matplotlib scaling graphs rendered at 150 DPI for presentation slides and papers.")
     c_p1, c_p2, c_p3 = st.columns(3)
 
-    f_time = plot_execution_time(df)
+    has_opt = "Optimized Parallel" in df["mode"].values
+    if has_opt:
+        f_time = plot_three_way_execution_time(df)
+        f_sp = plot_speedup_comparison(df)
+        f_eff = plot_efficiency_comparison(df)
+    else:
+        f_time = plot_execution_time(df)
+        f_sp = plot_speedup(df)
+        f_eff = plot_efficiency(df)
+
     b_time = figure_to_png_bytes(f_time)
     plt.close(f_time)
     c_p1.download_button(
@@ -900,7 +1103,6 @@ def render_reports_tab(
         use_container_width=True,
     )
 
-    f_sp = plot_speedup(df)
     b_sp = figure_to_png_bytes(f_sp)
     plt.close(f_sp)
     c_p2.download_button(
@@ -912,7 +1114,6 @@ def render_reports_tab(
         use_container_width=True,
     )
 
-    f_eff = plot_efficiency(df)
     b_eff = figure_to_png_bytes(f_eff)
     plt.close(f_eff)
     c_p3.download_button(

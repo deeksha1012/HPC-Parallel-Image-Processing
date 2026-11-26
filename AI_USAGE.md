@@ -45,6 +45,7 @@ To guarantee academic integrity and software reliability:
 | Module 8: Automated PDF Benchmark Report Generation | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 | Module 9: Advanced Interactive Frontend & Navigation | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 | Module 10: HPC System Monitoring & Performance Intelligence | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
+| Module 11: Parallel Performance Optimization & Scalability | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT | TO BE FILLED BY STUDENT |
 
 ---
 

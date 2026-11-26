@@ -40,6 +40,13 @@ from reportlab.platypus import (
 )
 
 from src.plots import plot_efficiency, plot_execution_time, plot_speedup
+from src.plots_optimized import (
+    plot_efficiency_comparison as plot_three_way_efficiency,
+    plot_scalability_crossover,
+    plot_speedup_comparison as plot_three_way_speedup,
+    plot_three_way_execution_time,
+    plot_throughput_comparison as plot_three_way_throughput,
+)
 from src.intelligence import compute_throughput_metrics
 from src.monitor import (
     aggregate_worker_distribution,
@@ -161,7 +168,8 @@ def _generate_performance_analysis_text(df: pd.DataFrame) -> tuple[str, str, dic
     """
     seq_row = df[df["mode"] == "Sequential"].iloc[0]
     seq_time = float(seq_row["mean_time_s"])
-    par_df = df[df["mode"] == "Parallel"].copy()
+    par_modes = ["Parallel", "Optimized Parallel", "Original Parallel"]
+    par_df = df[df["mode"].isin(par_modes)].copy()
 
     if par_df.empty:
         summary = "Sequential Processing Only (No parallel configurations tested)"
@@ -174,6 +182,7 @@ def _generate_performance_analysis_text(df: pd.DataFrame) -> tuple[str, str, dic
     # Identify fastest parallel run and peak speedup
     fastest_idx = par_df["mean_time_s"].idxmin()
     fastest_row = par_df.loc[fastest_idx]
+    best_mode = str(fastest_row["mode"])
     best_workers = int(fastest_row["workers"])
     best_time = float(fastest_row["mean_time_s"])
     best_speedup = float(fastest_row["speedup"])
@@ -189,17 +198,26 @@ def _generate_performance_analysis_text(df: pd.DataFrame) -> tuple[str, str, dic
         "speedup": best_speedup,
         "eff": best_efficiency,
         "seq_time": seq_time,
+        "best_mode": best_mode,
     }
+
+    has_optimized = "Optimized Parallel" in df["mode"].values
+    max_gain_str = ""
+    if has_optimized:
+        opt_df = df[df["mode"] == "Optimized Parallel"]
+        if not opt_df.empty and "optimization_gain" in opt_df.columns:
+            peak_gain = float(opt_df["optimization_gain"].max())
+            max_gain_str = f" | Peak Optimization Gain: {peak_gain:.2f}x vs Original Parallel"
 
     if best_time < seq_time:
         reduction_pct = (1.0 - best_time / seq_time) * 100.0
         summary = (
-            f"Optimal Configuration: {best_workers} Worker Processes | "
+            f"Optimal Configuration: {best_mode} ({best_workers} Workers) | "
             f"Execution Time: {best_time:.3f} s | Speedup: {best_speedup:.2f}x | "
-            f"Efficiency: {best_efficiency:.1f}%"
+            f"Efficiency: {best_efficiency:.1f}%{max_gain_str}"
         )
         analysis_part1 = (
-            f"<b>Parallel Speedup & Scalability:</b> The parallel processing pipeline successfully accelerated "
+            f"<b>Parallel Speedup & Scalability:</b> The parallel processing pipeline ({best_mode}) successfully accelerated "
             f"batch image processing over the single-threaded sequential baseline ({seq_time:.3f} s). "
             f"The best-performing allocation utilized <b>{best_workers} worker processes</b>, reducing "
             f"total wall-clock execution time to <b>{best_time:.3f} s</b>—representing a <b>{reduction_pct:.1f}% time reduction</b> "
@@ -208,7 +226,7 @@ def _generate_performance_analysis_text(df: pd.DataFrame) -> tuple[str, str, dic
     else:
         summary = (
             f"Baseline Configuration: Sequential Processing ({seq_time:.3f} s) matched or outperformed "
-            f"parallel execution due to multiprocessing startup overhead."
+            f"parallel execution due to multiprocessing startup overhead.{max_gain_str}"
         )
         analysis_part1 = (
             f"<b>Overhead vs. Computation Trade-off:</b> On this specific workload, the single-core sequential baseline "
@@ -251,6 +269,7 @@ def generate_benchmark_pdf(
     monitor_summary: Optional[dict[str, Any]] = None,
     monitor_history: Optional[pd.DataFrame] = None,
     intelligence: Optional[dict[str, Any]] = None,
+    scalability_df: Optional[pd.DataFrame] = None,
 ) -> bytes:
     """
     Generate a complete, publication-ready A4 PDF report in memory.
@@ -483,45 +502,88 @@ def generate_benchmark_pdf(
     # =========================================================================
     story.append(Paragraph("2. Benchmark Results Table", h1_style))
 
-    table_headers = [
-        Paragraph("<b>Mode</b>", table_cell_bold),
-        Paragraph("<b>Workers</b>", table_cell_bold),
-        Paragraph("<b>Runs</b>", table_cell_bold),
-        Paragraph("<b>Mean Time</b>", table_cell_bold),
-        Paragraph("<b>Min Time</b>", table_cell_bold),
-        Paragraph("<b>Std Dev</b>", table_cell_bold),
-        Paragraph("<b>Speedup</b>", table_cell_bold),
-        Paragraph("<b>Efficiency</b>", table_cell_bold),
-    ]
-    table_rows = [table_headers]
+    has_opt = "Optimized Parallel" in df["mode"].values
+    if has_opt:
+        table_headers = [
+            Paragraph("<b>Mode</b>", table_cell_bold),
+            Paragraph("<b>Workers</b>", table_cell_bold),
+            Paragraph("<b>Runs</b>", table_cell_bold),
+            Paragraph("<b>Mean Time</b>", table_cell_bold),
+            Paragraph("<b>Min Time</b>", table_cell_bold),
+            Paragraph("<b>Speedup</b>", table_cell_bold),
+            Paragraph("<b>Efficiency</b>", table_cell_bold),
+            Paragraph("<b>Opt Gain</b>", table_cell_bold),
+        ]
+        table_rows = [table_headers]
 
-    for _, row in df.iterrows():
-        mode_val = str(row["mode"])
-        workers_val = str(int(row["workers"]))
-        runs_val = str(int(row["runs"]))
-        mean_s = f"{float(row['mean_time_s']):.3f} s"
-        min_s = f"{float(row['min_time_s']):.3f} s"
-        std_s = f"{float(row['std_time_s']):.3f} s"
-        speedup_str = f"{float(row['speedup']):.2f}x"
-        eff_str = f"{float(row['efficiency']) * 100.0:.1f}%"
+        for _, row in df.iterrows():
+            mode_val = str(row["mode"])
+            workers_val = str(int(row["workers"]))
+            runs_val = str(int(row["runs"]))
+            mean_s = f"{float(row['mean_time_s']):.3f} s"
+            min_s = f"{float(row['min_time_s']):.3f} s"
+            speedup_str = f"{float(row['speedup']):.2f}x"
+            eff_str = f"{float(row['efficiency']) * 100.0:.1f}%"
+            gain_val = float(row.get("optimization_gain", 1.0))
+            gain_str = f"{gain_val:.2f}x" if mode_val == "Optimized Parallel" else "-"
 
-        table_rows.append(
-            [
-                Paragraph(mode_val, table_cell_style),
-                Paragraph(workers_val, table_cell_style),
-                Paragraph(runs_val, table_cell_style),
-                Paragraph(mean_s, table_cell_style),
-                Paragraph(min_s, table_cell_style),
-                Paragraph(std_s, table_cell_style),
-                Paragraph(speedup_str, table_cell_style),
-                Paragraph(eff_str, table_cell_style),
-            ]
+            table_rows.append(
+                [
+                    Paragraph(mode_val, table_cell_style),
+                    Paragraph(workers_val, table_cell_style),
+                    Paragraph(runs_val, table_cell_style),
+                    Paragraph(mean_s, table_cell_style),
+                    Paragraph(min_s, table_cell_style),
+                    Paragraph(speedup_str, table_cell_style),
+                    Paragraph(eff_str, table_cell_style),
+                    Paragraph(gain_str, table_cell_style),
+                ]
+            )
+
+        results_table = Table(
+            table_rows,
+            colWidths=[90, 45, 40, 70, 70, 65, 70, 65],
         )
+    else:
+        table_headers = [
+            Paragraph("<b>Mode</b>", table_cell_bold),
+            Paragraph("<b>Workers</b>", table_cell_bold),
+            Paragraph("<b>Runs</b>", table_cell_bold),
+            Paragraph("<b>Mean Time</b>", table_cell_bold),
+            Paragraph("<b>Min Time</b>", table_cell_bold),
+            Paragraph("<b>Std Dev</b>", table_cell_bold),
+            Paragraph("<b>Speedup</b>", table_cell_bold),
+            Paragraph("<b>Efficiency</b>", table_cell_bold),
+        ]
+        table_rows = [table_headers]
 
-    results_table = Table(
-        table_rows,
-        colWidths=[70, 50, 45, 70, 70, 65, 65, 80],
-    )
+        for _, row in df.iterrows():
+            mode_val = str(row["mode"])
+            workers_val = str(int(row["workers"]))
+            runs_val = str(int(row["runs"]))
+            mean_s = f"{float(row['mean_time_s']):.3f} s"
+            min_s = f"{float(row['min_time_s']):.3f} s"
+            std_s = f"{float(row['std_time_s']):.3f} s"
+            speedup_str = f"{float(row['speedup']):.2f}x"
+            eff_str = f"{float(row['efficiency']) * 100.0:.1f}%"
+
+            table_rows.append(
+                [
+                    Paragraph(mode_val, table_cell_style),
+                    Paragraph(workers_val, table_cell_style),
+                    Paragraph(runs_val, table_cell_style),
+                    Paragraph(mean_s, table_cell_style),
+                    Paragraph(min_s, table_cell_style),
+                    Paragraph(std_s, table_cell_style),
+                    Paragraph(speedup_str, table_cell_style),
+                    Paragraph(eff_str, table_cell_style),
+                ]
+            )
+
+        results_table = Table(
+            table_rows,
+            colWidths=[70, 50, 45, 70, 70, 65, 65, 80],
+        )
     results_table.setStyle(
         TableStyle(
             [
@@ -703,40 +765,76 @@ def generate_benchmark_pdf(
     )
     story.append(Spacer(1, 8))
 
-    # Chart 1: Execution Time
-    fig_time = plot_execution_time(df)
-    story.append(KeepTogether([
-        Paragraph("<b>Figure 1: Mean Execution Time Comparison</b>", h2_style),
-        _render_matplotlib_chart(fig_time, width_pt=515, height_pt=200),
-        Paragraph(
-            "<i>Note: Lower bars indicate faster processing. Error bars show standard deviation across repeated trials.</i>",
-            caption_style,
-        ),
-    ]))
-    story.append(Spacer(1, 6))
+    if has_opt:
+        # Chart 1: 3-Way Execution Time
+        fig_time = plot_three_way_execution_time(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 1: 3-Way Execution Time (Sequential vs. Original vs. Optimized)</b>", h2_style),
+            _render_matplotlib_chart(fig_time, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Compares single-core baseline against original IPC multiprocessing and optimized zero-copy SharedMemory.</i>",
+                caption_style,
+            ),
+        ]))
+        story.append(Spacer(1, 6))
 
-    # Chart 2: Speedup
-    fig_speedup = plot_speedup(df)
-    story.append(KeepTogether([
-        Paragraph("<b>Figure 2: Parallel Speedup vs. Worker Process Count</b>", h2_style),
-        _render_matplotlib_chart(fig_speedup, width_pt=515, height_pt=200),
-        Paragraph(
-            "<i>Note: Points above 1.0 demonstrate acceleration. The dashed line depicts theoretical linear scaling (S = p).</i>",
-            caption_style,
-        ),
-    ]))
-    story.append(Spacer(1, 6))
+        # Chart 2: Speedup Comparison
+        fig_speedup = plot_three_way_speedup(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 2: Parallel Speedup Comparison vs. Ideal Scaling</b>", h2_style),
+            _render_matplotlib_chart(fig_speedup, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Points above 1.0 indicate acceleration over sequential. Dashed line depicts theoretical linear scaling (S = p).</i>",
+                caption_style,
+            ),
+        ]))
+        story.append(Spacer(1, 6))
 
-    # Chart 3: Efficiency
-    fig_eff = plot_efficiency(df)
-    story.append(KeepTogether([
-        Paragraph("<b>Figure 3: Parallel Efficiency vs. Worker Process Count</b>", h2_style),
-        _render_matplotlib_chart(fig_eff, width_pt=515, height_pt=200),
-        Paragraph(
-            "<i>Note: Dashed line at 100% represents ideal scaling. Downward slope illustrates increasing IPC and synchronization overhead.</i>",
-            caption_style,
-        ),
-    ]))
+        # Chart 3: Throughput Comparison
+        fig_tp = plot_three_way_throughput(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 3: Pipeline Processing Throughput Comparison</b>", h2_style),
+            _render_matplotlib_chart(fig_tp, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Compares processing rates in Images per second and Megapixels per second across architectures.</i>",
+                caption_style,
+            ),
+        ]))
+    else:
+        # Chart 1: Execution Time
+        fig_time = plot_execution_time(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 1: Mean Execution Time Comparison</b>", h2_style),
+            _render_matplotlib_chart(fig_time, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Lower bars indicate faster processing. Error bars show standard deviation across repeated trials.</i>",
+                caption_style,
+            ),
+        ]))
+        story.append(Spacer(1, 6))
+
+        # Chart 2: Speedup
+        fig_speedup = plot_speedup(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 2: Parallel Speedup vs. Worker Process Count</b>", h2_style),
+            _render_matplotlib_chart(fig_speedup, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Points above 1.0 demonstrate acceleration. The dashed line depicts theoretical linear scaling (S = p).</i>",
+                caption_style,
+            ),
+        ]))
+        story.append(Spacer(1, 6))
+
+        # Chart 3: Efficiency
+        fig_eff = plot_efficiency(df)
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 3: Parallel Efficiency vs. Worker Process Count</b>", h2_style),
+            _render_matplotlib_chart(fig_eff, width_pt=515, height_pt=200),
+            Paragraph(
+                "<i>Note: Dashed line at 100% represents ideal scaling. Downward slope illustrates increasing IPC and synchronization overhead.</i>",
+                caption_style,
+            ),
+        ]))
 
     # Telemetry Visualizations (Figures 4 & 5) if history is available
     if monitor_history is not None and not monitor_history.empty and len(monitor_history) > 1:
@@ -757,6 +855,19 @@ def generate_benchmark_pdf(
             _render_matplotlib_chart(fig_mem, width_pt=515, height_pt=180),
             Paragraph(
                 "<i>Note: Tracks physical RAM consumption (MB) and total utilization percentage during data-parallel execution.</i>",
+                caption_style,
+            ),
+        ]))
+
+    # Scalability Crossover Chart if provided
+    if scalability_df is not None and not scalability_df.empty:
+        fig_cross = plot_scalability_crossover(scalability_df)
+        story.append(Spacer(1, 6))
+        story.append(KeepTogether([
+            Paragraph("<b>Figure 6: Workload Scalability & Parallel Performance Crossover Analysis</b>", h2_style),
+            _render_matplotlib_chart(fig_cross, width_pt=515, height_pt=190),
+            Paragraph(
+                "<i>Note: Illustrates empirical scaling and detects the crossover threshold where multi-core execution overcomes process creation and IPC serialization overhead.</i>",
                 caption_style,
             ),
         ]))
